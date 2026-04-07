@@ -18,6 +18,8 @@ bump new_version:
     sed -i 's|xbelite2-dkms/[0-9.]*|xbelite2-dkms/{{new_version}}|g' pkg/xbelite2.install xbelite2.install
     @echo "Bumped to {{new_version}}"
 
+aur_dir := "../aur/xbelite2-dkms"
+
 # Bump, commit, tag, and push
 release new_version: (bump new_version)
     git add Cargo.toml Cargo.lock kmod/dkms.conf pkg/PKGBUILD pkg/xbelite2.install xbelite2.install
@@ -25,3 +27,11 @@ release new_version: (bump new_version)
     git tag -a "v{{new_version}}" -m "v{{new_version}}"
     git push && git push --tags
     gh release create "v{{new_version}}" --generate-notes
+    @just aur-publish {{new_version}}
+
+# Update AUR repo with new version
+aur-publish new_version:
+    cp pkg/xbelite2.install {{aur_dir}}/xbelite2.install
+    sed -i 's/^pkgver=.*/pkgver={{new_version}}/' {{aur_dir}}/PKGBUILD
+    cd {{aur_dir}} && makepkg --printsrcinfo > .SRCINFO
+    cd {{aur_dir}} && git commit -am "updated the version to {{new_version}}" && git push
