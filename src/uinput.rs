@@ -105,7 +105,7 @@ impl VirtualGamepad {
         // Bus type 0x05 = BUS_BLUETOOTH
         dev.id_bustype = 0x05;
         dev.id_vendor = VENDOR_MICROSOFT;
-        dev.id_product = 0xBE12; // Custom PID for our virtual device
+        dev.id_product = 0xBE12;
         dev.id_version = 1;
 
         // Stick axes: -32768 to 32767

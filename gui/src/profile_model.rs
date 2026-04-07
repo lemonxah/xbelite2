@@ -306,14 +306,22 @@ impl qobject::ProfileModel {
         match ipc(&sp, &Req::GetStatus) {
             Ok(Resp::Status { devices }) => {
                 if let Some(dev) = devices.first() {
+                    let hw = dev.hw_profile as i32;
                     self.as_mut().set_device_name(QString::from(&dev.name));
-                    self.as_mut().set_hw_profile(dev.hw_profile as i32);
-                    self.as_mut().set_active_profile(dev.active_profile as i32);
+                    self.as_mut().set_hw_profile(hw);
                     self.as_mut().set_connected(dev.connected);
                     let did = dev.device_id.clone();
                     self.as_mut().rust_mut().device_id = did.clone();
-                    // Send loaded config to daemon
                     let _ = ipc(&sp, &Req::SetConfig { device_id: did, config });
+
+                    // Select the correct software profile based on HW profile
+                    if hw >= 1 && hw <= 3 {
+                        let sw_idx = (hw - 1) as usize;
+                        self.as_mut().rust_mut().sel_idx = sw_idx;
+                        self.as_mut().set_active_profile(hw);
+                    } else {
+                        self.as_mut().set_active_profile(0);
+                    }
                 } else {
                     self.as_mut().set_device_name(QString::from("No controller found"));
                     self.as_mut().set_connected(false);
@@ -325,7 +333,9 @@ impl qobject::ProfileModel {
             }
         }
 
-        self.load_profile(0);
+        // Load the active profile's data
+        let idx = self.as_ref().rust().sel_idx;
+        self.load_profile(idx);
     }
 
     fn select_profile(mut self: Pin<&mut Self>, index: i32) {

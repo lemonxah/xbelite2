@@ -1,25 +1,25 @@
-# xbelite2 - Xbox Elite Series 2 userspace driver
+# xbelite2 — Xbox Elite Series 2 userspace driver
 #
-# Prevent xpad/xpadneo from claiming Elite 2 controllers so our daemon
-# can access them via hidraw.
+# Automatically bind Elite 2 to hid-xbelite2 instead of hid-microsoft.
 
-# BT: grant hidraw access
-KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b05", MODE="0660", TAG+="uaccess"
-KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b22", MODE="0660", TAG+="uaccess"
-KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="028e", SUBSYSTEM=="hidraw", MODE="0660", TAG+="uaccess"
+# BT BLE (0x0B22): unbind whatever grabbed it, bind xbelite2
+ACTION=="add", SUBSYSTEM=="hid", KERNEL=="0005:045E:0B22.*", \
+    RUN+="/bin/sh -c 'echo %k > /sys/bus/hid/drivers/microsoft/unbind 2>/dev/null; echo %k > /sys/bus/hid/drivers/xbelite2/bind 2>/dev/null; true'"
 
-# USB: unbind xpad/xpadneo and rebind to usbhid for hidraw access
-ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="0b00", \
-    RUN+="/bin/sh -c 'for drv in xpad xpadneo; do echo $kernel > /sys/bus/usb/drivers/$drv/unbind 2>/dev/null; done; echo $kernel > /sys/bus/usb/drivers/usbhid/bind 2>/dev/null'"
+# BT Classic (0x0B05)
+ACTION=="add", SUBSYSTEM=="hid", KERNEL=="0005:045E:0B05.*", \
+    RUN+="/bin/sh -c 'echo %k > /sys/bus/hid/drivers/microsoft/unbind 2>/dev/null; echo %k > /sys/bus/hid/drivers/xbelite2/bind 2>/dev/null; true'"
 
-# BT: unbind xpadneo from Elite 2 BLE devices so hid-generic handles them
-ACTION=="add", SUBSYSTEM=="hid", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b22", \
-    RUN+="/bin/sh -c 'echo $kernel > /sys/bus/hid/drivers/xpadneo/unbind 2>/dev/null'"
-ACTION=="add", SUBSYSTEM=="hid", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b05", \
-    RUN+="/bin/sh -c 'echo $kernel > /sys/bus/hid/drivers/xpadneo/unbind 2>/dev/null'"
+# USB (0x0B00): unbind xpad
+ACTION=="add", SUBSYSTEM=="hid", KERNEL=="0003:045E:0B00.*", \
+    RUN+="/bin/sh -c 'echo %k > /sys/bus/hid/drivers/xpad/unbind 2>/dev/null; echo %k > /sys/bus/hid/drivers/xbelite2/bind 2>/dev/null; true'"
 
-# USB: grant hidraw access after rebind
-KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b00", MODE="0660", TAG+="uaccess"
+# hidraw: ROOT ONLY — prevents Steam from seeing the raw device.
+# Only our daemon (running as root) accesses hidraw.
+# Steam/games see the virtual gamepad at /dev/input/event* instead.
+KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b22", MODE="0600"
+KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b05", MODE="0600"
+KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b00", MODE="0600"
 
-# uinput access for virtual gamepad creation
+# uinput access for the daemon
 KERNEL=="uinput", MODE="0660", GROUP="input"

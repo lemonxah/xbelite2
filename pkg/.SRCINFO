@@ -1,0 +1,18 @@
+pkgbase = xbelite2
+	pkgdesc = Xbox Elite Series 2 controller driver and configurator for Linux
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/lemonxah/xboxelite2
+	install = xbelite2.install
+	arch = x86_64
+	license = GPL-2.0-only
+	makedepends = rust
+	makedepends = cargo
+	depends = qt6-base
+	depends = qt6-declarative
+	depends = dkms
+	backup = etc/udev/rules.d/99-xbelite2.rules
+	backup = etc/modprobe.d/xbelite2.conf
+	backup = etc/modprobe.d/xbelite2-blacklist.conf
+
+pkgname = xbelite2
