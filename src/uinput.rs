@@ -20,8 +20,85 @@ const UINPUT_IOCTL_BASE: u8 = b'U';
 nix::ioctl_write_int!(ui_set_evbit, UINPUT_IOCTL_BASE, 100);
 nix::ioctl_write_int!(ui_set_keybit, UINPUT_IOCTL_BASE, 101);
 nix::ioctl_write_int!(ui_set_absbit, UINPUT_IOCTL_BASE, 103);
+nix::ioctl_write_int!(ui_set_ffbit, UINPUT_IOCTL_BASE, 107);
 nix::ioctl_none!(ui_dev_create, UINPUT_IOCTL_BASE, 1);
 nix::ioctl_none!(ui_dev_destroy, UINPUT_IOCTL_BASE, 2);
+
+// FF event types
+const EV_FF: u16 = 0x15;
+const FF_RUMBLE: u16 = 0x50;
+
+// uinput_ff_upload / uinput_ff_erase ioctls
+const UI_BEGIN_FF_UPLOAD: u8 = 200;
+const UI_END_FF_UPLOAD: u8 = 201;
+const UI_BEGIN_FF_ERASE: u8 = 202;
+const UI_END_FF_ERASE: u8 = 203;
+
+/// Matches kernel's struct ff_rumble_effect
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct FfRumble {
+    pub strong_magnitude: u16,
+    pub weak_magnitude: u16,
+}
+
+/// Matches kernel's struct ff_effect (simplified for rumble)
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FfEffect {
+    pub effect_type: u16,
+    pub id: i16,
+    pub direction: u16,
+    pub trigger_button: u16,
+    pub trigger_interval: u16,
+    pub replay_length: u16,
+    pub replay_delay: u16,
+    // Union: we only care about rumble
+    pub u: [u8; 52], // padded union (largest variant)
+}
+
+impl Default for FfEffect {
+    fn default() -> Self {
+        unsafe { mem::zeroed() }
+    }
+}
+
+impl FfEffect {
+    pub fn rumble(&self) -> FfRumble {
+        unsafe { std::ptr::read_unaligned(self.u.as_ptr() as *const FfRumble) }
+    }
+}
+
+/// Matches kernel's struct uinput_ff_upload
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UinputFfUpload {
+    request_id: u32,
+    retval: i32,
+    effect: FfEffect,
+    old: FfEffect,
+}
+
+impl Default for UinputFfUpload {
+    fn default() -> Self {
+        unsafe { mem::zeroed() }
+    }
+}
+
+/// Matches kernel's struct uinput_ff_erase
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct UinputFfErase {
+    request_id: u32,
+    retval: i32,
+    effect_id: u32,
+}
+
+// _IOWR('U', 200, struct uinput_ff_upload)
+nix::ioctl_readwrite!(ui_begin_ff_upload, UINPUT_IOCTL_BASE, UI_BEGIN_FF_UPLOAD, UinputFfUpload);
+nix::ioctl_readwrite!(ui_end_ff_upload, UINPUT_IOCTL_BASE, UI_END_FF_UPLOAD, UinputFfUpload);
+nix::ioctl_readwrite!(ui_begin_ff_erase, UINPUT_IOCTL_BASE, UI_BEGIN_FF_ERASE, UinputFfErase);
+nix::ioctl_readwrite!(ui_end_ff_erase, UINPUT_IOCTL_BASE, UI_END_FF_ERASE, UinputFfErase);
 
 /// Matches the kernel's struct input_event layout
 #[repr(C)]
@@ -68,6 +145,7 @@ impl VirtualGamepad {
     /// Create a new virtual gamepad device.
     pub fn new(dev_index: usize) -> Result<Self> {
         let file = OpenOptions::new()
+            .read(true)
             .write(true)
             .open("/dev/uinput")
             .context("Failed to open /dev/uinput (need root or uinput group)")?;
@@ -78,6 +156,8 @@ impl VirtualGamepad {
         unsafe {
             ui_set_evbit(fd, EV_KEY as _).context("set EV_KEY")?;
             ui_set_evbit(fd, EV_ABS as _).context("set EV_ABS")?;
+            ui_set_evbit(fd, EV_FF as _).context("set EV_FF")?;
+            ui_set_ffbit(fd, FF_RUMBLE as _).context("set FF_RUMBLE")?;
         }
 
         // Enable buttons
@@ -107,6 +187,7 @@ impl VirtualGamepad {
         dev.id_vendor = VENDOR_MICROSOFT;
         dev.id_product = 0xBE12;
         dev.id_version = 1;
+        dev.ff_effects_max = 16;
 
         // Stick axes: -32768 to 32767
         for axis in [ABS_X, ABS_Y, ABS_RX, ABS_RY] {
@@ -171,6 +252,60 @@ impl VirtualGamepad {
         };
         self.file.write_all(bytes).context("write input event")?;
         Ok(())
+    }
+
+    /// Get the fd for polling (needed to receive FF upload/erase/play events).
+    pub fn fd(&self) -> i32 {
+        self.file.as_raw_fd()
+    }
+
+    /// Handle a pending FF upload request from the kernel.
+    /// Returns Ok(()) even if there's nothing to do.
+    pub fn handle_ff_upload(&self) -> Result<()> {
+        let fd = self.file.as_raw_fd();
+        let mut upload = UinputFfUpload::default();
+        match unsafe { ui_begin_ff_upload(fd, &mut upload) } {
+            Ok(_) => {
+                upload.retval = 0; // accept the upload
+                unsafe { ui_end_ff_upload(fd, &mut upload).context("end ff upload")? };
+            }
+            Err(_) => {} // no pending upload
+        }
+        Ok(())
+    }
+
+    /// Handle a pending FF erase request from the kernel.
+    pub fn handle_ff_erase(&self) -> Result<()> {
+        let fd = self.file.as_raw_fd();
+        let mut erase = UinputFfErase::default();
+        match unsafe { ui_begin_ff_erase(fd, &mut erase) } {
+            Ok(_) => {
+                erase.retval = 0; // accept the erase
+                unsafe { ui_end_ff_erase(fd, &mut erase).context("end ff erase")? };
+            }
+            Err(_) => {} // no pending erase
+        }
+        Ok(())
+    }
+
+    /// Read an input_event from uinput (for EV_FF play/stop and EV_UINPUT upload/erase).
+    /// Returns None if no event is available (non-blocking).
+    pub fn read_event(&self) -> Option<(u16, u16, i32)> {
+        use std::io::Read;
+        let mut buf = [0u8; mem::size_of::<InputEvent>()];
+        let fd = self.file.as_raw_fd();
+        // Peek if data available
+        let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        let ret = unsafe { libc::poll(&mut pfd, 1, 0) };
+        if ret <= 0 || (pfd.revents & libc::POLLIN) == 0 {
+            return None;
+        }
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len()) };
+        if n != buf.len() as isize {
+            return None;
+        }
+        let event: InputEvent = unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const _) };
+        Some((event.ev_type, event.code, event.value))
     }
 }
 

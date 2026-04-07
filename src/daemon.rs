@@ -118,6 +118,11 @@ pub fn run(running: Arc<AtomicBool>) -> Result<()> {
             controllers.remove(&id);
         }
 
+        // Handle force-feedback events from uinput (Steam ping, rumble, etc.)
+        for ctrl in controllers.values_mut() {
+            process_ff_events(ctrl);
+        }
+
         handle_ipc(&listener, &mut controllers);
 
         if controllers.is_empty() && last_scan.elapsed() >= scan_interval {
@@ -330,6 +335,51 @@ fn process_events(ctrl: &mut ControllerState) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// Handle force-feedback events from uinput (e.g. Steam "Ping" button).
+/// Reads EV_FF play events and EV_UINPUT upload/erase requests,
+/// then sends rumble commands to the physical controller.
+fn process_ff_events(ctrl: &mut ControllerState) {
+    const EV_UINPUT: u16 = 0x0101;
+    const UI_FF_UPLOAD: u16 = 1;
+    const UI_FF_ERASE: u16 = 2;
+    const EV_FF: u16 = 0x15;
+
+    // Process all pending events from the uinput fd
+    while let Some((ev_type, code, value)) = ctrl.gamepad.read_event() {
+        match ev_type {
+            EV_UINPUT => {
+                match code {
+                    UI_FF_UPLOAD => { let _ = ctrl.gamepad.handle_ff_upload(); }
+                    UI_FF_ERASE => { let _ = ctrl.gamepad.handle_ff_erase(); }
+                    _ => {}
+                }
+            }
+            EV_FF => {
+                // value > 0 means play, value == 0 means stop
+                let rumble = if value > 0 {
+                    // Default ping rumble: moderate intensity on all motors
+                    [0x03u8, 0x0F, 0x20, 0x20, 0x40, 0x40, 0x20, 0x00, 0x00]
+                } else {
+                    [0x03u8, 0x0F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+                };
+                let _ = send_raw_report(ctrl, &rumble);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn send_raw_report(ctrl: &mut ControllerState, report: &[u8]) -> Result<()> {
+    match &mut ctrl.source {
+        InputSource::Hidraw { file, .. } | InputSource::MiscDev { file } => {
+            use std::io::Write;
+            file.write_all(report).context("write report")?;
+        }
+        InputSource::Evdev { .. } => {}
+    }
     Ok(())
 }
 
