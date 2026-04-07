@@ -12,21 +12,21 @@ install=xbelite2.install
 source=()
 
 build() {
-    cd "$startdir"
+    cd "$startdir/.."
     cargo build --release
     cd gui
     cargo build --release
 }
 
 package() {
-    cd "$startdir"
+    cd "$startdir/.."
 
     install -Dm755 target/release/xbelite2d "$pkgdir/usr/bin/xbelite2d"
     install -Dm755 gui/target/release/xbelite2-gui "$pkgdir/usr/bin/xbelite2-gui"
-    install -Dm644 xbelite2d.service "$pkgdir/usr/lib/systemd/system/xbelite2d.service"
+    install -Dm644 pkg/xbelite2d.service "$pkgdir/usr/lib/systemd/system/xbelite2d.service"
     install -Dm644 99-xbelite2.rules "$pkgdir/etc/udev/rules.d/99-xbelite2.rules"
-    install -Dm644 modprobe.d/xbelite2.conf "$pkgdir/etc/modprobe.d/xbelite2.conf"
-    install -Dm644 modprobe.d/xbelite2-blacklist.conf "$pkgdir/etc/modprobe.d/xbelite2-blacklist.conf"
+    install -Dm644 pkg/modprobe.d/xbelite2.conf "$pkgdir/etc/modprobe.d/xbelite2.conf"
+    install -Dm644 pkg/modprobe.d/xbelite2-blacklist.conf "$pkgdir/etc/modprobe.d/xbelite2-blacklist.conf"
 
     # DKMS kernel module source
     local _dkmsdir="$pkgdir/usr/src/$pkgname-$pkgver"
