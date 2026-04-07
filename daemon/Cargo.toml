@@ -13,10 +13,6 @@ path = "src/lib.rs"
 name = "xbelite2d"
 path = "src/main.rs"
 
-[[bin]]
-name = "xbe2-dump"
-path = "src/bin/xbe2-dump.rs"
-
 [dependencies]
 xbelite2-gip = { path = "../gip" }
 nix = { version = "0.31", features = ["ioctl", "fs", "poll"] }
@@ -27,4 +23,3 @@ log = "0.4"
 env_logger = "0.11"
 anyhow = "1"
 ctrlc = "3"
-rusb = "0.9"

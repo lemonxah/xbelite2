@@ -18,6 +18,14 @@ pub fn write_page(dev: &mut GipDevice, page: u8, data: &[u8]) {
     dev.vendor_cmd(&payload);
 }
 
+/// Commit/persist written profile data to controller flash.
+/// Must be called after writing pages, otherwise changes are lost on reboot.
+/// Sequence: re-init extended reports, then send persist command.
+pub fn commit(dev: &mut GipDevice) {
+    dev.init_extended();
+    dev.vendor_cmd(&[0x03]);
+}
+
 /// Read the mapping page for a profile (1-3) and slot (0=A/normal, 1=B/shift).
 pub fn read_mapping(dev: &mut GipDevice, profile: usize, slot: usize) -> Option<ProfileMapping> {
     let page = PROFILE_MAPPING_PAGES[profile][slot];
@@ -44,7 +52,7 @@ pub fn write_curves(dev: &mut GipDevice, profile: usize, slot: usize, data: &[u8
     write_page(dev, page, data);
 }
 
-/// Set the LED color for a profile. Updates both slots.
+/// Set the LED color for a profile. Updates both slots and persists.
 pub fn set_color(dev: &mut GipDevice, profile: usize, r: u8, g: u8, b: u8) {
     for slot in 0..2 {
         let page = PROFILE_MAPPING_PAGES[profile][slot];
@@ -57,6 +65,7 @@ pub fn set_color(dev: &mut GipDevice, profile: usize, r: u8, g: u8, b: u8) {
             write_page(dev, page, &data);
         }
     }
+    commit(dev);
 }
 
 /// Reset color to default (white) for a profile.
@@ -72,9 +81,10 @@ pub fn reset_color(dev: &mut GipDevice, profile: usize) {
             write_page(dev, page, &data);
         }
     }
+    commit(dev);
 }
 
-/// Set dead zones for a profile. Updates both slots.
+/// Set dead zones for a profile. Updates both slots and persists.
 pub fn set_deadzones(dev: &mut GipDevice, profile: usize, lstick: u8, rstick: u8, ltrig: u8, rtrig: u8) {
     for slot in 0..2 {
         let page = PROFILE_MAPPING_PAGES[profile][slot];
@@ -87,9 +97,10 @@ pub fn set_deadzones(dev: &mut GipDevice, profile: usize, lstick: u8, rstick: u8
             write_page(dev, page, &data);
         }
     }
+    commit(dev);
 }
 
-/// Set vibration intensity for a profile. Updates both slots.
+/// Set vibration intensity for a profile. Updates both slots and persists.
 pub fn set_vibration(dev: &mut GipDevice, profile: usize, left: u8, right: u8) {
     for slot in 0..2 {
         let page = PROFILE_MAPPING_PAGES[profile][slot];
@@ -100,6 +111,7 @@ pub fn set_vibration(dev: &mut GipDevice, profile: usize, left: u8, right: u8) {
             write_page(dev, page, &data);
         }
     }
+    commit(dev);
 }
 
 /// Remap buttons for a profile.
@@ -128,6 +140,7 @@ pub fn remap_buttons(dev: &mut GipDevice, profile: usize, remaps: &[(GipButton, 
             write_page(dev, page, &data);
         }
     }
+    commit(dev);
 }
 
 /// Remap buttons only in shift mode (SlotB).
@@ -149,6 +162,7 @@ pub fn remap_shift(dev: &mut GipDevice, profile: usize, remaps: &[(GipButton, Gi
         data[OFF_FLAGS] = FLAGS_CUSTOM;
         write_page(dev, page, &data);
     }
+    commit(dev);
 }
 
 /// Reset all button remaps to default for a profile.
@@ -163,6 +177,7 @@ pub fn reset_remaps(dev: &mut GipDevice, profile: usize) {
             write_page(dev, page, &data);
         }
     }
+    commit(dev);
 }
 
 /// Set stick curves for a profile. Updates both slots.
@@ -186,6 +201,7 @@ pub fn set_curves(
             write_page(dev, page, &data);
         }
     }
+    commit(dev);
 }
 
 /// Reset stick curves to default linear for a profile.

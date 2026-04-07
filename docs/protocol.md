@@ -152,9 +152,13 @@ Note: byte offsets above are relative to the payload (after the 4-byte GIP heade
 
 The main command for profile configuration. All profile reads/writes go through 0x4D.
 
-### Sub 0x03 — UNLOCK
+### Sub 0x03 — UNLOCK / COMMIT
 
-Must be sent before any writes (profile, LED, name). Can be sent multiple times.
+Dual-purpose command:
+- **Before writes**: unlocks the controller for profile/LED/name writes
+- **After writes**: persists changes to controller flash (must follow sub 0x07 re-init)
+
+Without the post-write commit, changes are lost on controller reboot.
 
 ```
 OUT: 4d 10 <seq> 01 03
@@ -286,8 +290,10 @@ After this the controller sends extended 0x20 (51-byte) and 0x0C (21-byte) input
 Before any profile, LED, or name writes:
 
 1. Send UNLOCK: `4D 10 <seq> 01 03` (can send 1–3 times)
-2. Perform writes
-3. Optionally read back to verify
+2. Perform writes (all 4 pages for a profile: mapping A, mapping B, curves A, curves B)
+3. Re-init extended reports: `4D 10 <seq> 02 07 00`
+4. Send COMMIT: `4D 10 <seq> 01 03` (same as unlock — persists to flash)
+5. Optionally read back to verify
 
 ---
 
