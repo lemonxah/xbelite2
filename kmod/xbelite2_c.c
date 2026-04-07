@@ -246,10 +246,13 @@ static ssize_t misc_write(struct file *f, const char __user *buf,
 	if (!d || !d->udev) return -ENODEV;
 	if (cnt > sizeof(kbuf)) return -EINVAL;
 	if (copy_from_user(kbuf, buf, cnt)) return -EFAULT;
-	if (usb_interrupt_msg(d->udev, usb_sndintpipe(d->udev, 0x02),
-			      kbuf, cnt, &actual, 1000))
-		return -EIO;
-	return actual;
+	{
+		int ret = usb_bulk_msg(d->udev, usb_sndbulkpipe(d->udev, 0x02),
+				       kbuf, cnt, &actual, 2000);
+		if (ret && actual <= 0)
+			return -EIO;
+	}
+	return cnt;
 }
 
 static __poll_t misc_poll(struct file *f, struct poll_table_struct *w)
@@ -274,10 +277,10 @@ static void usb_init_work(struct work_struct *work)
 	int a;
 
 	if (!d->running) return;
-	usb_interrupt_msg(d->udev, usb_sndintpipe(d->udev, 0x02),
-			  (void *)pwr, sizeof(pwr), &a, 1000);
-	usb_interrupt_msg(d->udev, usb_sndintpipe(d->udev, 0x02),
-			  (void *)init, sizeof(init), &a, 1000);
+	usb_bulk_msg(d->udev, usb_sndbulkpipe(d->udev, 0x02),
+		     (void *)pwr, sizeof(pwr), &a, 1000);
+	usb_bulk_msg(d->udev, usb_sndbulkpipe(d->udev, 0x02),
+		     (void *)init, sizeof(init), &a, 1000);
 }
 
 // ---- USB GIP IRQ ----

@@ -86,11 +86,11 @@ const OFF_FLAGS: usize = 0;
 const OFF_REMAP_A: usize = 1;
 const OFF_REMAP_B: usize = 5;
 const OFF_REMAP_EXT: usize = 9;
-const OFF_DEADZONES: usize = 29;
-const OFF_COLOR_FLAG: usize = 44;
-const OFF_COLOR_R: usize = 45;
-const OFF_COLOR_G: usize = 46;
-const OFF_COLOR_B: usize = 47;
+const OFF_DEADZONES: usize = 28;
+const OFF_COLOR_FLAG: usize = 45;
+const OFF_COLOR_R: usize = 46;
+const OFF_COLOR_G: usize = 47;
+const OFF_COLOR_B: usize = 48;
 const OFF_VIBRATION: usize = 49;
 
 /// Handle to /dev/xbelite2 for bidirectional GIP communication.
@@ -117,14 +117,20 @@ impl GipDev {
         }
         let mut dev = GipDev { file };
         dev.drain();
+        // Send unlock/init sequence (0x4D sub 0x03) to enable writes
+        dev.gip_4d(&[0x03]);
         dev
     }
 
     /// Write a raw GIP packet to the controller.
-    fn send(&mut self, pkt: &[u8]) {
-        self.file.write_all(pkt).unwrap_or_else(|e| {
-            eprintln!("Write failed: {e}");
-        });
+    fn send(&mut self, pkt: &[u8]) -> bool {
+        match self.file.write_all(pkt) {
+            Ok(_) => true,
+            Err(e) => {
+                eprintln!("Write failed (cmd=0x{:02x}, {} bytes): {e}", pkt[0], pkt.len());
+                false
+            }
+        }
     }
 
     /// Read one frame from the ring buffer (2-byte LE length + payload).
@@ -371,12 +377,10 @@ fn cmd_write_name(dev: &mut GipDev, new_name: &str) {
         name_buf[i * 2 + 1] = bytes[1];
     }
 
+    // Write name via 0x4D sub 0x05 (same as read, but with data)
     let mut payload = vec![0x05];
     payload.extend_from_slice(&name_buf);
-    let seq = SEQ_1E.fetch_add(1, Ordering::Relaxed);
-    let mut pkt = vec![0x1E, 0x30, seq, payload.len() as u8];
-    pkt.extend_from_slice(&payload);
-    dev.send(&pkt);
+    dev.gip_4d(&payload);
     dev.drain();
 
     match read_device_name(dev) {
