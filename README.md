@@ -1,132 +1,179 @@
 # xbelite2
 
-Linux userspace driver and configuration tool for the Xbox Elite Wireless Controller Series 2.
+Linux driver and configuration tool for the Xbox Elite Wireless Controller Series 2.
 
 ![Xbox Elite Series 2](docs/elite2.png)
 
 ## What this does
 
-The Xbox Elite 2 has four back paddles and a hardware profile switch. On Linux, the stock drivers (`xpad`, `hid-generic`) don't expose the paddles properly over Bluetooth, and there's no way to configure button remapping, stick response curves, or trigger dead zones without the Windows Xbox Accessories app.
+The Xbox Elite 2 has four back paddles, a hardware profile switch, and per-profile LED colors, button remapping, stick curves, and trigger dead zones stored on the controller. On Linux, the stock drivers (`xpad`, `hid-generic`) don't expose the paddles properly, and there's no way to configure the controller without the Windows Xbox Accessories app.
 
-This project fixes that. It consists of two parts:
+This project fixes that with a custom kernel module, a userspace daemon, a CLI config tool, and a GUI.
 
-- **xbelite2d** — a daemon that reads raw HID reports from the controller (Bluetooth or USB), parses all inputs including paddles and the hardware profile switch, and emits a virtual gamepad via uinput with configurable input transformations
-- **xbelite2-gui** — a Qt6/QML configuration app that talks to the daemon over a Unix socket, showing live controller state and letting you edit profiles
+## Components
+
+| Component | Description |
+|-----------|-------------|
+| **xbelite2** (kmod) | DKMS kernel module. Claims the controller on USB and BT, provides `/dev/xbelite2` (USB) and `/dev/xbelite2_bt` (BT) character devices for userspace |
+| **xbelite2d** (daemon) | Reads input from the kernel module, applies profile transforms (remapping, curves, dead zones), emits a virtual gamepad via uinput. Handles force-feedback/rumble forwarding |
+| **xbe2-rw** (CLI) | Reads and writes controller config over USB via the GIP protocol: profiles, button remaps, LED colors, dead zones, stick curves, device name, rumble testing |
+| **xbelite2-gui** (GUI) | Qt6/QML configuration app. Connects to the daemon over a Unix socket for live input display and profile editing |
+
+### What you can configure
+
+**On the controller hardware** (via `xbe2-rw` or GUI, USB only):
+- Profile LED colors (RGB)
+- Button remapping (normal and shift/alternate mode)
+- Stick dead zones and response curves
+- Vibration motor intensity
+- Device name
+
+**In software profiles** (via GUI or config file):
+- Button and paddle remapping
+- Stick response curves (16-point per axis)
+- Stick and trigger dead zones
+- Vibration intensity scaling
 
 ### How profiles work
 
 The Elite 2 has a physical profile switch with 4 positions (0-3):
 
-- **Profile 0 (Default)** — pure passthrough. All inputs go straight through to the virtual gamepad with no modifications. Use this for Steam Input or any game that handles its own bindings.
-- **Profiles 1, 2, 3** — each maps to a software profile you configure in the GUI. Button remapping, stick response curves, stick dead zones, trigger dead zones, and vibration intensity are all applied before the virtual gamepad sees the input.
+- **Profile 0 (Default)** — pure passthrough, no modifications. Use this for Steam Input or games that handle their own bindings.
+- **Profiles 1, 2, 3** — each maps to a software profile. Button remapping, stick curves, dead zones, and vibration scaling are applied before the virtual gamepad sees the input.
 
-Profiles are stored in `~/.config/xbelite2/elite2.json` (owned by your user, not root).
+Software profiles are stored in `~/.config/xbelite2/elite2.json`.
 
-### What you can configure per profile
+## Installation
 
-- Button and paddle remapping (any button to any other button)
-- Stick response curves (16-point piecewise-linear, per axis)
-- Stick dead zones (per stick, 0-50%)
-- Trigger dead zones (min/max per trigger)
-- Vibration intensity (per motor: main, weak, left trigger, right trigger)
+### Arch Linux (AUR)
 
-## Building
+```
+yay -S xbelite2-dkms
+```
 
-### Requirements
+This installs the kernel module (via DKMS), daemon, GUI, udev rules, and systemd service.
 
+### From source
+
+Requirements:
 - Rust toolchain (stable)
+- Linux kernel headers (for DKMS module build)
 - Qt 6 with QtQuick/QML (`qt6-base`, `qt6-declarative`)
-- `libc` headers
 
-On Arch Linux:
+```bash
+# Build everything
+cargo build --workspace --release
 
+# Build and load kernel module
+just kmod
+
+# Install daemon + service
+just install
 ```
-sudo pacman -S qt6-base qt6-declarative
+
+### Manual setup
+
+```bash
+# Install udev rules and modprobe config
+sudo cp 99-xbelite2.rules /etc/udev/rules.d/
+sudo cp pkg/modprobe.d/xbelite2-blacklist.conf /etc/modprobe.d/
+sudo udevadm control --reload-rules
+
+# Start daemon
+sudo systemctl enable --now xbelite2d
 ```
 
-### Daemon
+## Usage
 
-```
-cargo build --release
+### CLI tool
+
+```bash
+# Read controller info
+sudo xbe2-rw read
+
+# Read/write device name
+sudo xbe2-rw name
+sudo xbe2-rw name "my controller"
+
+# Profile summary
+sudo xbe2-rw profiles
+
+# Profile detail (normal + shift mappings, curves, colors)
+sudo xbe2-rw profile 1
+
+# Set LED color
+sudo xbe2-rw color 1 ff0000
+
+# Button remapping
+sudo xbe2-rw remap 1 A=B B=A          # swap A and B
+sudo xbe2-rw remap-shift 1 A=LB       # A becomes LB in shift mode
+sudo xbe2-rw remap-reset 1             # reset to default
+
+# Dead zones and vibration
+sudo xbe2-rw deadzone 1 10 10 5 5
+sudo xbe2-rw vibration 1 48 48
+
+# Rumble test
+sudo xbe2-rw rumble 50 50 0 0
+sudo xbe2-rw rumble-stop
+
+# Live LED preview
+sudo xbe2-rw led 0000ff
+sudo xbe2-rw led-off
 ```
 
 ### GUI
 
-```
-cd gui
-cargo build --release
-```
-
-## Running
-
-### Start the daemon
-
-The daemon needs root for access to `/dev/hidraw*` and `/dev/uinput`:
-
-```
-sudo ./target/release/xbelite2d
+```bash
+xbelite2-gui
 ```
 
-Or install the systemd service:
+Connects to the daemon at `/run/xbelite2.sock`.
 
-```
-sudo cp xbelite2d.service /etc/systemd/system/
-sudo cp 99-xbelite2.rules /etc/udev/rules.d/
-sudo udevadm control --reload-rules
-sudo systemctl enable --now xbelite2d
-```
-
-### Run the GUI
-
-```
-./gui/target/release/xbelite2-gui
-```
-
-The GUI connects to the daemon at `/run/xbelite2.sock`. It loads and saves profiles from `~/.config/xbelite2/`.
-
-## Technical details
-
-### Bluetooth HID report format
-
-The Elite 2 connects over BLE (PID `0x0B22`, appears as `0x028E` after kernel spoofing). The 20-byte HID report (report ID `0x01`) layout, confirmed from the actual HID descriptor and hardware testing:
-
-| Bytes | Field | Format |
-|-------|-------|--------|
-| 1-2 | Left Stick X | unsigned u16, center=32768 |
-| 3-4 | Left Stick Y | unsigned u16, center=32768 |
-| 5-6 | Right Stick X | unsigned u16, center=32768 |
-| 7-8 | Right Stick Y | unsigned u16, center=32768 |
-| 9-10 | Left Trigger | 10-bit + 6 padding, 0-1023 |
-| 11-12 | Right Trigger | 10-bit + 6 padding, 0-1023 |
-| 13 | D-pad hat | 4-bit (1-8 directions, 0=center) |
-| 14-15 | Buttons | 12 bits (A,B,X,Y,LB,RB,View,Menu,LS,RS,Xbox,Share) |
-| 16 | Share button | 1 bit + 7 padding |
-| 17 | Profile number | 0-3 |
-| 18 | Trigger mode | 4-bit + 4 padding |
-| 19 | Paddles | 4-bit (UR, LR, UL, LL) |
-
-The paddles at byte 19 report in all four hardware profiles over Bluetooth. This is the key finding that makes the whole project possible — `xpadneo` and `xpad` both suppress paddle data in profiles 1-3, but the raw HID report always contains it.
-
-### Architecture
+## Architecture
 
 ```
 Controller (BT/USB)
     |
     v
-/dev/hidraw* -----> xbelite2d (reads raw HID, grabs evdev)
-                        |
-                        |--> parse HID report
-                        |--> apply profile transforms (if profile 1-3)
-                        |--> emit to /dev/uinput virtual gamepad
-                        |
-                        |--> /run/xbelite2.sock (IPC)
-                                |
-                                v
-                          xbelite2-gui (Qt6/QML)
-                                |
-                                v
-                     ~/.config/xbelite2/elite2.json
+xbelite2.ko (kernel module)
+    |
+    +--> /dev/xbelite2      (USB GIP ring buffer)
+    +--> /dev/xbelite2_bt   (BT HID ring buffer)
+    |
+    v
+xbelite2d (daemon)
+    |
+    +--> parse input reports
+    +--> apply profile transforms
+    +--> emit to /dev/uinput virtual gamepad
+    +--> forward force-feedback/rumble to controller
+    |
+    +--> /run/xbelite2.sock (IPC)
+            |
+            v
+      xbelite2-gui / xbe2-rw
+            |
+            v
+  ~/.config/xbelite2/elite2.json
 ```
+
+### Workspace layout
+
+```
+xboxelite2/
+  daemon/       xbelite2d daemon + library
+  gip/          shared GIP protocol library
+  xbe2-rw/      CLI config tool
+  gui/          Qt6/QML GUI
+  kmod/         kernel module (C + Rust)
+  pkg/          Arch Linux packaging
+  docs/         protocol documentation
+```
+
+## Protocol
+
+See [docs/protocol.md](docs/protocol.md) for the reverse-engineered GIP protocol reference.
 
 ## License
 

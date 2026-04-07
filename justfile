@@ -18,6 +18,23 @@ bump new_version:
     sed -i 's|xbelite2-dkms/[0-9.]*|xbelite2-dkms/{{new_version}}|g' pkg/xbelite2.install xbelite2.install
     @echo "Bumped to {{new_version}}"
 
+# Build and reload kernel module (dev cycle)
+kmod:
+    make -C kmod
+    -sudo rmmod xbelite2 2>/dev/null
+    sudo insmod kmod/xbelite2.ko
+    @echo "Module loaded"
+
+# Build daemon
+build:
+    cargo build --release
+
+# Build and install everything locally (no package)
+install: build kmod
+    sudo cp target/release/xbelite2d /usr/bin/xbelite2d
+    sudo systemctl restart xbelite2d
+    @echo "Daemon restarted"
+
 aur_dir := "../aur/xbelite2-dkms"
 
 # Bump, commit, tag, and push
