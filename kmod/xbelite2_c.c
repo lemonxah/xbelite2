@@ -37,6 +37,7 @@ struct xbelite2_usb {
 	spinlock_t ring_lock;
 	wait_queue_head_t ring_wait;
 	struct miscdevice miscdev;
+	struct work_struct init_work;
 };
 
 static struct xbelite2_usb *g_usb;
@@ -264,6 +265,21 @@ static const struct file_operations misc_fops = {
 	.write = misc_write, .poll = misc_poll,
 };
 
+// ---- USB GIP init work (runs in process context, safe to sleep) ----
+static void usb_init_work(struct work_struct *work)
+{
+	struct xbelite2_usb *d = container_of(work, struct xbelite2_usb, init_work);
+	static const u8 pwr[] = {0x05, 0x20, 0x00, 0x01, 0x00};
+	static const u8 init[] = {0x4D, 0x10, 0x01, 0x02, 0x07, 0x00};
+	int a;
+
+	if (!d->running) return;
+	usb_interrupt_msg(d->udev, usb_sndintpipe(d->udev, 0x02),
+			  (void *)pwr, sizeof(pwr), &a, 1000);
+	usb_interrupt_msg(d->udev, usb_sndintpipe(d->udev, 0x02),
+			  (void *)init, sizeof(init), &a, 1000);
+}
+
 // ---- USB GIP IRQ ----
 static void usb_irq(struct urb *urb)
 {
@@ -275,14 +291,8 @@ static void usb_irq(struct urb *urb)
 
 	if (len >= 4) {
 		if (data[0] == 0x02 && !d->init_sent) { // HELLO
-			static const u8 pwr[] = {0x05, 0x20, 0x00, 0x01, 0x00};
-			static const u8 init[] = {0x4D, 0x10, 0x01, 0x02, 0x07, 0x00};
-			int a;
-			usb_interrupt_msg(d->udev, usb_sndintpipe(d->udev, 0x02),
-					  (void *)pwr, sizeof(pwr), &a, 100);
-			usb_interrupt_msg(d->udev, usb_sndintpipe(d->udev, 0x02),
-					  (void *)init, sizeof(init), &a, 100);
 			d->init_sent = true;
+			schedule_work(&d->init_work);
 		}
 		if (xbelite2_on_gip_message(data, len))
 			ring_push(d, data, len);
@@ -334,6 +344,7 @@ static int usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	ret = misc_register(&d->miscdev);
 	if (ret) goto err3;
 
+	INIT_WORK(&d->init_work, usb_init_work);
 	d->running = true;
 	g_usb = d;
 	ret = usb_submit_urb(d->irq_in, GFP_KERNEL);
@@ -359,6 +370,7 @@ static void usb_disconnect(struct usb_interface *intf)
 	xbelite2_on_usb_disconnect();
 	wake_up_interruptible(&d->ring_wait);
 	usb_kill_urb(d->irq_in);
+	cancel_work_sync(&d->init_work);
 	misc_deregister(&d->miscdev);
 	usb_free_urb(d->irq_in);
 	usb_free_coherent(d->udev, d->in_size, d->in_buf, d->in_dma);
