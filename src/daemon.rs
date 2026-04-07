@@ -393,8 +393,8 @@ fn send_raw_report(ctrl: &mut ControllerState, report: &[u8]) -> Result<()> {
 ///   Bytes 9-10:  Left Trigger  (10-bit + 6 padding, 0-1023)
 ///   Bytes 11-12: Right Trigger (10-bit + 6 padding, 0-1023)
 ///   Byte  13:    Hat switch (4 bits, 1-8=directions, 0=centered) + 4 padding
-///   Bytes 14-15: 12 buttons (1 bit each) + 4 padding
-///   Byte  16:    Share button (1 bit) + 7 padding
+///   Bytes 14-15: 15 buttons (Usage 1-15, some unused) + 1 padding
+///   Byte  16:    Share button (Consumer 0x00B2, 1 bit) + 7 padding
 ///   Byte  17:    Profile number (consumer usage 0x0085)
 ///   Byte  18:    Trigger mode (consumer usage 0x0099, 4 bits + 4 padding)
 ///   Byte  19:    Paddles (consumer usage 0x0081, 4 bits + 4 padding)
@@ -434,19 +434,28 @@ fn parse_hidraw_report(data: &[u8]) -> GamepadState {
         _ => {} // 0 = centered
     }
 
-    // Buttons: bytes 14-15, 12 sequential bits (HID usage 1-12)
+    // Buttons: bytes 14-15, 15 bits (HID Usage 1-15, some unused)
+    // Decoded from BLE HID report descriptor (PID 0x0B22):
+    //   Bit 0:  A          Bit 8:  View/Back
+    //   Bit 1:  B          Bit 9:  Menu/Start
+    //   Bit 2:  (unused)   Bit 10: L Stick click
+    //   Bit 3:  X          Bit 11: R Stick click
+    //   Bit 4:  Y          Bit 12: (unused)
+    //   Bit 5:  (unused)   Bit 13: (unused)
+    //   Bit 6:  LB         Bit 14: Xbox/Guide
+    //   Bit 7:  RB         Bit 15: (padding)
     let btns = u16::from_le_bytes([data[14], data[15]]);
-    state.btn_a      = btns & (1 << 0) != 0;  // Button 1
-    state.btn_b      = btns & (1 << 1) != 0;  // Button 2
-    state.btn_x      = btns & (1 << 2) != 0;  // Button 3
-    state.btn_y      = btns & (1 << 3) != 0;  // Button 4
-    state.btn_lb     = btns & (1 << 4) != 0;  // Button 5
-    state.btn_rb     = btns & (1 << 5) != 0;  // Button 6
-    state.btn_view   = btns & (1 << 6) != 0;  // Button 7
-    state.btn_menu   = btns & (1 << 7) != 0;  // Button 8
-    state.btn_lstick = btns & (1 << 8) != 0;  // Button 9 = L Stick click
-    state.btn_rstick = btns & (1 << 9) != 0;  // Button 10 = R Stick click
-    state.btn_xbox   = btns & (1 << 10) != 0; // Button 11 = Xbox/Guide
+    state.btn_a      = btns & (1 << 0) != 0;
+    state.btn_b      = btns & (1 << 1) != 0;
+    state.btn_x      = btns & (1 << 3) != 0;
+    state.btn_y      = btns & (1 << 4) != 0;
+    state.btn_lb     = btns & (1 << 6) != 0;
+    state.btn_rb     = btns & (1 << 7) != 0;
+    state.btn_view   = btns & (1 << 8) != 0;
+    state.btn_menu   = btns & (1 << 9) != 0;
+    state.btn_lstick = btns & (1 << 10) != 0;
+    state.btn_rstick = btns & (1 << 11) != 0;
+    state.btn_xbox   = btns & (1 << 14) != 0;
 
     // Profile: byte 17
     if data.len() > 17 {
