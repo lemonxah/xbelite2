@@ -41,13 +41,112 @@ struct xbelite2_usb {
 
 static struct xbelite2_usb *g_usb;
 
+// ---- BT misc device (ring buffer, like USB) ----
+static struct {
+	unsigned char ring[RING_SIZE];
+	int head, tail;
+	spinlock_t lock;
+	wait_queue_head_t wait;
+	struct miscdevice miscdev;
+	bool active;
+	struct hid_device *hdev;
+} g_bt;
+
+static void bt_ring_push(const u8 *data, int len)
+{
+	unsigned long flags;
+	int i;
+	spin_lock_irqsave(&g_bt.lock, flags);
+	g_bt.ring[g_bt.head] = len & 0xFF;
+	g_bt.head = (g_bt.head + 1) & (RING_SIZE - 1);
+	g_bt.ring[g_bt.head] = (len >> 8) & 0xFF;
+	g_bt.head = (g_bt.head + 1) & (RING_SIZE - 1);
+	for (i = 0; i < len; i++) {
+		g_bt.ring[g_bt.head] = data[i];
+		g_bt.head = (g_bt.head + 1) & (RING_SIZE - 1);
+	}
+	spin_unlock_irqrestore(&g_bt.lock, flags);
+	wake_up_interruptible(&g_bt.wait);
+}
+
+static ssize_t bt_misc_read(struct file *f, char __user *buf, size_t cnt, loff_t *p)
+{
+	unsigned long flags;
+	ssize_t copied = 0;
+	if (!g_bt.active) return -ENODEV;
+	if (g_bt.head == g_bt.tail) {
+		if (f->f_flags & O_NONBLOCK) return -EAGAIN;
+		if (wait_event_interruptible(g_bt.wait,
+		    g_bt.head != g_bt.tail || !g_bt.active))
+			return -ERESTARTSYS;
+	}
+	if (!g_bt.active) return -ENODEV;
+	spin_lock_irqsave(&g_bt.lock, flags);
+	while (copied < cnt && g_bt.tail != g_bt.head) {
+		u8 b = g_bt.ring[g_bt.tail];
+		g_bt.tail = (g_bt.tail + 1) & (RING_SIZE - 1);
+		spin_unlock_irqrestore(&g_bt.lock, flags);
+		if (put_user(b, buf + copied)) return -EFAULT;
+		copied++;
+		spin_lock_irqsave(&g_bt.lock, flags);
+	}
+	spin_unlock_irqrestore(&g_bt.lock, flags);
+	return copied;
+}
+
+static ssize_t bt_misc_write(struct file *f, const char __user *buf,
+			     size_t cnt, loff_t *p)
+{
+	unsigned char kbuf[64];
+	struct hid_device *hdev;
+	if (!g_bt.active) return -ENODEV;
+	hdev = g_bt.hdev;
+	if (!hdev) return -ENODEV;
+	if (cnt > sizeof(kbuf)) return -EINVAL;
+	if (copy_from_user(kbuf, buf, cnt)) return -EFAULT;
+	if (hid_hw_output_report(hdev, kbuf, cnt) < 0)
+		return -EIO;
+	return cnt;
+}
+
+static __poll_t bt_misc_poll(struct file *f, struct poll_table_struct *w)
+{
+	if (!g_bt.active) return POLLERR;
+	poll_wait(f, &g_bt.wait, w);
+	return (g_bt.head != g_bt.tail) ? (POLLIN | POLLRDNORM) : 0;
+}
+
+static const struct file_operations bt_misc_fops = {
+	.owner = THIS_MODULE, .read = bt_misc_read,
+	.write = bt_misc_write, .poll = bt_misc_poll,
+};
+
 // ---- BT HID ----
 static int bt_probe(struct hid_device *hdev, const struct hid_device_id *id)
 {
 	int ret = hid_parse(hdev);
 	if (ret) return ret;
-	ret = hid_hw_start(hdev, HID_CONNECT_HIDRAW);
+	ret = hid_hw_start(hdev, HID_CONNECT_DRIVER);
 	if (ret) return ret;
+
+	spin_lock_init(&g_bt.lock);
+	init_waitqueue_head(&g_bt.wait);
+	g_bt.head = 0;
+	g_bt.tail = 0;
+	g_bt.hdev = hdev;
+
+	g_bt.miscdev.minor = MISC_DYNAMIC_MINOR;
+	g_bt.miscdev.name = "xbelite2_bt";
+	g_bt.miscdev.fops = &bt_misc_fops;
+	g_bt.miscdev.mode = 0600;
+	ret = misc_register(&g_bt.miscdev);
+	if (ret) {
+		hid_hw_stop(hdev);
+		return ret;
+	}
+
+	g_bt.active = true;
+	hid_hw_open(hdev);
 	xbelite2_on_bt_connect();
 	hid_info(hdev, "Xbox Elite Series 2 connected (BT)\n");
 	return 0;
@@ -55,13 +154,19 @@ static int bt_probe(struct hid_device *hdev, const struct hid_device_id *id)
 
 static void bt_remove(struct hid_device *hdev)
 {
+	g_bt.active = false;
+	g_bt.hdev = NULL;
 	xbelite2_on_bt_disconnect();
+	wake_up_interruptible(&g_bt.wait);
+	hid_hw_close(hdev);
+	misc_deregister(&g_bt.miscdev);
 	hid_hw_stop(hdev);
 }
 
 static int bt_raw_event(struct hid_device *hdev, struct hid_report *report,
 			u8 *data, int size)
 {
+	bt_ring_push(data, size);
 	return xbelite2_on_bt_report(data, size);
 }
 

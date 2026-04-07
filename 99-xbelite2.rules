@@ -17,9 +17,9 @@ ACTION=="add", SUBSYSTEM=="hid", KERNEL=="0003:045E:0B00.*", \
 # hidraw: ROOT ONLY — prevents Steam from seeing the raw device.
 # Only our daemon (running as root) accesses hidraw.
 # Steam/games see the virtual gamepad at /dev/input/event* instead.
-KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b22", MODE="0600"
-KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b05", MODE="0600"
-KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b00", MODE="0600"
+KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b22", MODE="0600", GROUP="root", TAG-="uaccess"
+KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b05", MODE="0600", GROUP="root", TAG-="uaccess"
+KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b00", MODE="0600", GROUP="root", TAG-="uaccess"
 
 # uinput access for the daemon
 KERNEL=="uinput", MODE="0660", GROUP="input"

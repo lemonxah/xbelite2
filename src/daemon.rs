@@ -21,6 +21,9 @@ enum InputSource {
         file: std::fs::File,
         _grab: Option<std::fs::File>,
     },
+    MiscDev {
+        file: std::fs::File,
+    },
     Evdev {
         reader: evdev::EvdevReader,
     },
@@ -38,6 +41,7 @@ impl ControllerState {
     fn fd(&self) -> i32 {
         match &self.source {
             InputSource::Hidraw { file, .. } => file.as_raw_fd(),
+            InputSource::MiscDev { file } => file.as_raw_fd(),
             InputSource::Evdev { reader } => reader.fd(),
         }
     }
@@ -128,6 +132,19 @@ pub fn run(running: Arc<AtomicBool>) -> Result<()> {
 }
 
 fn discover_and_attach(controllers: &mut HashMap<String, ControllerState>) -> Result<()> {
+    // Prefer the kernel module's misc device (no hidraw visible to Steam)
+    let bt_misc = std::path::Path::new("/dev/xbelite2_bt");
+    let bt_key = "misc:/dev/xbelite2_bt".to_string();
+    if bt_misc.exists() && !controllers.contains_key(&bt_key) {
+        match setup_misc_controller(bt_misc, 0) {
+            Ok(state) => {
+                log::info!("Attached controller (misc): {}", state.device_id);
+                controllers.insert(state.device_id.clone(), state);
+            }
+            Err(e) => log::error!("Failed to set up misc controller: {e}"),
+        }
+    }
+
     let hidraw_devices = hidraw::discover_devices().unwrap_or_default();
     for (idx, device) in hidraw_devices.into_iter().enumerate() {
         let device_id = format!("hidraw:{}", device.path.display());
@@ -150,7 +167,7 @@ fn discover_and_attach(controllers: &mut HashMap<String, ControllerState>) -> Re
             continue;
         }
         let already_have = controllers.values().any(|c| {
-            matches!(&c.source, InputSource::Hidraw { .. })
+            matches!(&c.source, InputSource::Hidraw { .. } | InputSource::MiscDev { .. })
         });
         if already_have {
             continue;
@@ -191,6 +208,27 @@ fn setup_hidraw_controller(device: hidraw::HidrawDevice, idx: usize) -> Result<C
     })
 }
 
+fn setup_misc_controller(path: &std::path::Path, idx: usize) -> Result<ControllerState> {
+    let device_id = format!("misc:{}", path.display());
+
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("open {}", path.display()))?;
+
+    let gamepad = VirtualGamepad::new(idx)?;
+    let config = DeviceConfig::default();
+
+    Ok(ControllerState {
+        source: InputSource::MiscDev { file },
+        gamepad,
+        config,
+        prev_state: GamepadState::default(),
+        device_id,
+    })
+}
+
 fn setup_evdev_controller(device: evdev::EvdevDevice, idx: usize) -> Result<ControllerState> {
     let device_id = format!("evdev:{}", device.path.display());
     let mut reader = evdev::EvdevReader::open(device)?;
@@ -221,6 +259,39 @@ fn process_events(ctrl: &mut ControllerState) -> Result<()> {
                 return Ok(());
             }
             let current = parse_hidraw_report(&buf[..n]);
+
+            if current.hw_profile == 0 {
+                let identity = Profile::default();
+                let events = transform::transform(&current, &ctrl.prev_state, &identity);
+                if !events.is_empty() {
+                    ctrl.gamepad.emit(&events)?;
+                }
+            } else {
+                let sw_idx = (current.hw_profile as usize).saturating_sub(1);
+                let profile = ctrl.config.profiles.get(sw_idx)
+                    .or_else(|| ctrl.config.profiles.first());
+                if let Some(profile) = profile {
+                    let events = transform::transform(&current, &ctrl.prev_state, profile);
+                    if !events.is_empty() {
+                        ctrl.gamepad.emit(&events)?;
+                    }
+                }
+            }
+            ctrl.prev_state = current;
+        }
+        InputSource::MiscDev { file } => {
+            // Misc device sends length-prefixed frames: 2 bytes LE length + payload
+            let mut len_buf = [0u8; 2];
+            file.read_exact(&mut len_buf).context("read misc len")?;
+            let frame_len = u16::from_le_bytes(len_buf) as usize;
+            if frame_len == 0 || frame_len > buf.len() {
+                return Ok(());
+            }
+            file.read_exact(&mut buf[..frame_len]).context("read misc payload")?;
+            if buf[0] != 0x01 || frame_len < 15 {
+                return Ok(());
+            }
+            let current = parse_hidraw_report(&buf[..frame_len]);
 
             if current.hw_profile == 0 {
                 let identity = Profile::default();
@@ -494,6 +565,7 @@ fn handle_ipc_request(
                         device_id: ctrl.device_id.clone(),
                         name: match &ctrl.source {
                             InputSource::Hidraw { .. } => "Elite 2 (hidraw)".to_string(),
+                            InputSource::MiscDev { .. } => "Elite 2 (BT)".to_string(),
                             InputSource::Evdev { reader } => reader.info.name.clone(),
                         },
                         hw_profile: s.hw_profile,
@@ -561,6 +633,7 @@ fn handle_ipc_request(
             if let Some(ctrl) = controllers.get_mut(&device_id) {
                 let fd = match &ctrl.source {
                     InputSource::Hidraw { file, .. } => file.as_raw_fd(),
+                    InputSource::MiscDev { file } => file.as_raw_fd(),
                     _ => return IpcResponse::Error { message: "Not supported over evdev".into() },
                 };
                 std::thread::spawn(move || {
@@ -613,6 +686,19 @@ fn send_rumble(ctrl: &mut ControllerState, motor: u8, intensity: u8) -> anyhow::
 
     match &mut ctrl.source {
         InputSource::Hidraw { file, .. } => {
+            use std::io::Write;
+            file.write_all(&report).context("write rumble")?;
+            let fd = file.as_raw_fd();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let stop = [0x03u8, 0x0F, 0, 0, 0, 0, 0x00, 0x00, 0x00];
+                unsafe {
+                    libc::write(fd, stop.as_ptr() as *const _, stop.len());
+                }
+            });
+            Ok(())
+        }
+        InputSource::MiscDev { file } => {
             use std::io::Write;
             file.write_all(&report).context("write rumble")?;
             let fd = file.as_raw_fd();
