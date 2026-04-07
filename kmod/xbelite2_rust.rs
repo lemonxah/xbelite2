@@ -50,7 +50,7 @@ pub extern "C" fn xbelite2_on_gip_message(data: *const u8, size: c_int) -> c_int
 
     // Forward gamepad input, elite extended reports, and vendor messages
     match cmd {
-        0x20 | 0x0C | 0x4D | 0x02 | 0x03 => 1, // INPUT, ELITE, VENDOR, HELLO, STATUS
+        0x20 | 0x07 | 0x0C | 0x4D | 0x02 | 0x03 => 1, // INPUT, GUIDE, ELITE, VENDOR, HELLO, STATUS
         _ => 0,
     }
 }

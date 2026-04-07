@@ -364,11 +364,23 @@ fn process_events(ctrl: &mut ControllerState) -> Result<()> {
             }
             file.read_exact(&mut buf[..frame_len]).context("read usb misc payload")?;
 
+            // Handle Xbox/Guide button (command 0x07)
+            if buf[0] == 0x07 && frame_len >= 5 {
+                ctrl.prev_state.btn_xbox = buf[4] != 0;
+                let events = transform::transform(&ctrl.prev_state, &ctrl.prev_state, &Profile::default());
+                if !events.is_empty() {
+                    ctrl.gamepad.emit(&events)?;
+                }
+                return Ok(());
+            }
+
             // Only process GIP input reports (command 0x20)
             if buf[0] != 0x20 || frame_len < 18 {
                 return Ok(());
             }
-            let current = parse_gip_input(&buf[..frame_len]);
+            let mut current = parse_gip_input(&buf[..frame_len]);
+            // Preserve Xbox button state from command 0x07
+            current.btn_xbox = ctrl.prev_state.btn_xbox;
 
             if current.hw_profile == 0 {
                 let identity = Profile::default();
@@ -598,12 +610,12 @@ fn parse_gip_input(data: &[u8]) -> GamepadState {
 
     // Buttons byte 2 (data[5])
     let b2 = data[5];
-    state.btn_lb     = b2 & (1 << 0) != 0;
-    state.btn_rb     = b2 & (1 << 1) != 0;
-    state.dpad_up    = b2 & (1 << 2) != 0;
-    state.dpad_down  = b2 & (1 << 3) != 0;
-    state.dpad_left  = b2 & (1 << 4) != 0;
-    state.dpad_right = b2 & (1 << 5) != 0;
+    state.dpad_up    = b2 & (1 << 0) != 0;
+    state.dpad_down  = b2 & (1 << 1) != 0;
+    state.dpad_left  = b2 & (1 << 2) != 0;
+    state.dpad_right = b2 & (1 << 3) != 0;
+    state.btn_lb     = b2 & (1 << 4) != 0;
+    state.btn_rb     = b2 & (1 << 5) != 0;
     state.btn_lstick = b2 & (1 << 6) != 0;
     state.btn_rstick = b2 & (1 << 7) != 0;
 
@@ -617,19 +629,9 @@ fn parse_gip_input(data: &[u8]) -> GamepadState {
     state.right_stick_x = i16::from_le_bytes([data[14], data[15]]);
     state.right_stick_y = i16::from_le_bytes([data[16], data[17]]);
 
-    // Xbox/Guide button — GIP sends this as a separate command (0x07),
-    // but some firmware versions include it in data[4] bit 0
-    state.btn_xbox = b1 & (1 << 0) != 0;
-
-    // Elite 2 extended data (if present after the standard 18 bytes)
+    // Paddles — Elite 2 reports these at byte 18 in extended data
     if data.len() > 18 {
-        // Profile byte at offset 18 (from 0x4D init enabling extended reports)
-        state.hw_profile = data[18] & 0x03;
-    }
-
-    // Paddles — Elite 2 reports these in the extended data
-    if data.len() > 22 {
-        let paddles = data[22] & 0x0F;
+        let paddles = data[18] & 0x0F;
         state.paddle_ur = paddles & 0x01 != 0;
         state.paddle_lr = paddles & 0x02 != 0;
         state.paddle_ul = paddles & 0x04 != 0;
