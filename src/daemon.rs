@@ -24,6 +24,9 @@ enum InputSource {
     MiscDev {
         file: std::fs::File,
     },
+    UsbMiscDev {
+        file: std::fs::File,
+    },
     Evdev {
         reader: evdev::EvdevReader,
     },
@@ -42,6 +45,7 @@ impl ControllerState {
         match &self.source {
             InputSource::Hidraw { file, .. } => file.as_raw_fd(),
             InputSource::MiscDev { file } => file.as_raw_fd(),
+            InputSource::UsbMiscDev { file } => file.as_raw_fd(),
             InputSource::Evdev { reader } => reader.fd(),
         }
     }
@@ -137,16 +141,28 @@ pub fn run(running: Arc<AtomicBool>) -> Result<()> {
 }
 
 fn discover_and_attach(controllers: &mut HashMap<String, ControllerState>) -> Result<()> {
-    // Prefer the kernel module's misc device (no hidraw visible to Steam)
+    // Prefer the kernel module's misc devices (not visible to Steam as gamepads)
     let bt_misc = std::path::Path::new("/dev/xbelite2_bt");
     let bt_key = "misc:/dev/xbelite2_bt".to_string();
     if bt_misc.exists() && !controllers.contains_key(&bt_key) {
         match setup_misc_controller(bt_misc, 0) {
             Ok(state) => {
-                log::info!("Attached controller (misc): {}", state.device_id);
+                log::info!("Attached controller (BT misc): {}", state.device_id);
                 controllers.insert(state.device_id.clone(), state);
             }
-            Err(e) => log::error!("Failed to set up misc controller: {e}"),
+            Err(e) => log::error!("Failed to set up BT misc controller: {e}"),
+        }
+    }
+
+    let usb_misc = std::path::Path::new("/dev/xbelite2");
+    let usb_key = "usb:/dev/xbelite2".to_string();
+    if usb_misc.exists() && !controllers.contains_key(&usb_key) {
+        match setup_usb_misc_controller(usb_misc, 1) {
+            Ok(state) => {
+                log::info!("Attached controller (USB misc): {}", state.device_id);
+                controllers.insert(state.device_id.clone(), state);
+            }
+            Err(e) => log::error!("Failed to set up USB misc controller: {e}"),
         }
     }
 
@@ -172,7 +188,7 @@ fn discover_and_attach(controllers: &mut HashMap<String, ControllerState>) -> Re
             continue;
         }
         let already_have = controllers.values().any(|c| {
-            matches!(&c.source, InputSource::Hidraw { .. } | InputSource::MiscDev { .. })
+            matches!(&c.source, InputSource::Hidraw { .. } | InputSource::MiscDev { .. } | InputSource::UsbMiscDev { .. })
         });
         if already_have {
             continue;
@@ -227,6 +243,27 @@ fn setup_misc_controller(path: &std::path::Path, idx: usize) -> Result<Controlle
 
     Ok(ControllerState {
         source: InputSource::MiscDev { file },
+        gamepad,
+        config,
+        prev_state: GamepadState::default(),
+        device_id,
+    })
+}
+
+fn setup_usb_misc_controller(path: &std::path::Path, idx: usize) -> Result<ControllerState> {
+    let device_id = format!("usb:{}", path.display());
+
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("open {}", path.display()))?;
+
+    let gamepad = VirtualGamepad::new(idx)?;
+    let config = DeviceConfig::default();
+
+    Ok(ControllerState {
+        source: InputSource::UsbMiscDev { file },
         gamepad,
         config,
         prev_state: GamepadState::default(),
@@ -317,6 +354,41 @@ fn process_events(ctrl: &mut ControllerState) -> Result<()> {
             }
             ctrl.prev_state = current;
         }
+        InputSource::UsbMiscDev { file } => {
+            // USB misc device sends length-prefixed GIP frames: 2 bytes LE length + payload
+            let mut len_buf = [0u8; 2];
+            file.read_exact(&mut len_buf).context("read usb misc len")?;
+            let frame_len = u16::from_le_bytes(len_buf) as usize;
+            if frame_len == 0 || frame_len > buf.len() {
+                return Ok(());
+            }
+            file.read_exact(&mut buf[..frame_len]).context("read usb misc payload")?;
+
+            // Only process GIP input reports (command 0x20)
+            if buf[0] != 0x20 || frame_len < 18 {
+                return Ok(());
+            }
+            let current = parse_gip_input(&buf[..frame_len]);
+
+            if current.hw_profile == 0 {
+                let identity = Profile::default();
+                let events = transform::transform(&current, &ctrl.prev_state, &identity);
+                if !events.is_empty() {
+                    ctrl.gamepad.emit(&events)?;
+                }
+            } else {
+                let sw_idx = (current.hw_profile as usize).saturating_sub(1);
+                let profile = ctrl.config.profiles.get(sw_idx)
+                    .or_else(|| ctrl.config.profiles.first());
+                if let Some(profile) = profile {
+                    let events = transform::transform(&current, &ctrl.prev_state, profile);
+                    if !events.is_empty() {
+                        ctrl.gamepad.emit(&events)?;
+                    }
+                }
+            }
+            ctrl.prev_state = current;
+        }
         InputSource::Evdev { reader } => {
             let ev = reader.read_event()?;
             if ev.ev_type == 0x00 && ev.code == 0x00 {
@@ -366,16 +438,16 @@ fn process_ff_events(ctrl: &mut ControllerState) {
             }
             EV_FF => {
                 log::info!("FF play: code={code} value={value}");
-                // value > 0 means play, value == 0 means stop
-                let rumble = if value > 0 {
-                    // Default ping rumble: moderate intensity on all motors
-                    [0x03u8, 0x0F, 0x20, 0x20, 0x40, 0x40, 0x20, 0x00, 0x00]
+                if value > 0 {
+                    match send_rumble_command(ctrl, 0x20, 0x20, 0x40, 0x40, 0x20) {
+                        Ok(_) => log::info!("Rumble sent"),
+                        Err(e) => log::error!("Rumble failed: {e}"),
+                    }
                 } else {
-                    [0x03u8, 0x0F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-                };
-                match send_raw_report(ctrl, &rumble) {
-                    Ok(_) => log::info!("Rumble sent"),
-                    Err(e) => log::error!("Rumble failed: {e}"),
+                    match send_rumble_command(ctrl, 0, 0, 0, 0, 0) {
+                        Ok(_) => log::info!("Rumble stop sent"),
+                        Err(e) => log::error!("Rumble stop failed: {e}"),
+                    }
                 }
             }
             _ => {}
@@ -383,11 +455,21 @@ fn process_ff_events(ctrl: &mut ControllerState) {
     }
 }
 
-fn send_raw_report(ctrl: &mut ControllerState, report: &[u8]) -> Result<()> {
+/// Send a rumble command using the correct format for the transport.
+/// Motor values are 0-100. Duration is in 10ms units (0x20 = ~320ms).
+fn send_rumble_command(ctrl: &mut ControllerState, lt: u8, rt: u8, strong: u8, weak: u8, duration: u8) -> Result<()> {
     match &mut ctrl.source {
         InputSource::Hidraw { file, .. } | InputSource::MiscDev { file } => {
+            // BT HID output report: [report_id=0x03, motor_mask, LT, RT, strong, weak, duration, delay, repeat]
+            let report = [0x03u8, 0x0F, lt, rt, strong, weak, duration, 0x00, 0x00];
             use std::io::Write;
-            file.write_all(report).context("write report")?;
+            file.write_all(&report).context("write BT rumble")?;
+        }
+        InputSource::UsbMiscDev { file } => {
+            // GIP rumble: [cmd=0x09, device=0, seq=0, len=9, sub=0, mask=0x0F, LT, RT, strong, weak, duration, delay, repeat]
+            let report = [0x09u8, 0x00, 0x00, 0x09, 0x00, 0x0F, lt, rt, strong, weak, duration, 0x00, 0x00];
+            use std::io::Write;
+            file.write_all(&report).context("write GIP rumble")?;
         }
         InputSource::Evdev { .. } => {}
     }
@@ -476,6 +558,78 @@ fn parse_hidraw_report(data: &[u8]) -> GamepadState {
     // Paddles: byte 19
     if data.len() > 19 {
         let paddles = data[19] & 0x0F;
+        state.paddle_ur = paddles & 0x01 != 0;
+        state.paddle_lr = paddles & 0x02 != 0;
+        state.paddle_ul = paddles & 0x04 != 0;
+        state.paddle_ll = paddles & 0x08 != 0;
+    }
+
+    state
+}
+
+/// Parse GIP (Game Input Protocol) input report from USB.
+///
+/// GIP header (4 bytes): [command=0x20, flags, sequence, length]
+/// Payload (14+ bytes):
+///   Byte 4:      Buttons 1 (Menu bit2, View bit3, A bit4, B bit5, X bit6, Y bit7)
+///   Byte 5:      Buttons 2 (LB bit0, RB bit1, DUp bit2, DDown bit3, DLeft bit4, DRight bit5, LS bit6, RS bit7)
+///   Bytes 6-7:   Left Trigger  (u16 LE, 0-1023)
+///   Bytes 8-9:   Right Trigger (u16 LE, 0-1023)
+///   Bytes 10-11: Left Stick X  (i16 LE, -32768..32767)
+///   Bytes 12-13: Left Stick Y  (i16 LE, -32768..32767)
+///   Bytes 14-15: Right Stick X (i16 LE, -32768..32767)
+///   Bytes 16-17: Right Stick Y (i16 LE, -32768..32767)
+///   Byte 18+:    Elite extended data (profile, paddles, etc.)
+fn parse_gip_input(data: &[u8]) -> GamepadState {
+    let mut state = GamepadState::default();
+
+    if data.len() < 18 {
+        return state;
+    }
+
+    // Buttons byte 1 (data[4])
+    let b1 = data[4];
+    state.btn_menu   = b1 & (1 << 2) != 0;
+    state.btn_view   = b1 & (1 << 3) != 0;
+    state.btn_a      = b1 & (1 << 4) != 0;
+    state.btn_b      = b1 & (1 << 5) != 0;
+    state.btn_x      = b1 & (1 << 6) != 0;
+    state.btn_y      = b1 & (1 << 7) != 0;
+
+    // Buttons byte 2 (data[5])
+    let b2 = data[5];
+    state.btn_lb     = b2 & (1 << 0) != 0;
+    state.btn_rb     = b2 & (1 << 1) != 0;
+    state.dpad_up    = b2 & (1 << 2) != 0;
+    state.dpad_down  = b2 & (1 << 3) != 0;
+    state.dpad_left  = b2 & (1 << 4) != 0;
+    state.dpad_right = b2 & (1 << 5) != 0;
+    state.btn_lstick = b2 & (1 << 6) != 0;
+    state.btn_rstick = b2 & (1 << 7) != 0;
+
+    // Triggers (u16 LE, 0-1023)
+    state.left_trigger  = u16::from_le_bytes([data[6], data[7]]);
+    state.right_trigger = u16::from_le_bytes([data[8], data[9]]);
+
+    // Sticks (i16 LE)
+    state.left_stick_x  = i16::from_le_bytes([data[10], data[11]]);
+    state.left_stick_y  = i16::from_le_bytes([data[12], data[13]]);
+    state.right_stick_x = i16::from_le_bytes([data[14], data[15]]);
+    state.right_stick_y = i16::from_le_bytes([data[16], data[17]]);
+
+    // Xbox/Guide button — GIP sends this as a separate command (0x07),
+    // but some firmware versions include it in data[4] bit 0
+    state.btn_xbox = b1 & (1 << 0) != 0;
+
+    // Elite 2 extended data (if present after the standard 18 bytes)
+    if data.len() > 18 {
+        // Profile byte at offset 18 (from 0x4D init enabling extended reports)
+        state.hw_profile = data[18] & 0x03;
+    }
+
+    // Paddles — Elite 2 reports these in the extended data
+    if data.len() > 22 {
+        let paddles = data[22] & 0x0F;
         state.paddle_ur = paddles & 0x01 != 0;
         state.paddle_lr = paddles & 0x02 != 0;
         state.paddle_ul = paddles & 0x04 != 0;
@@ -636,6 +790,7 @@ fn handle_ipc_request(
                         name: match &ctrl.source {
                             InputSource::Hidraw { .. } => "Elite 2 (hidraw)".to_string(),
                             InputSource::MiscDev { .. } => "Elite 2 (BT)".to_string(),
+                            InputSource::UsbMiscDev { .. } => "Elite 2 (USB)".to_string(),
                             InputSource::Evdev { reader } => reader.info.name.clone(),
                         },
                         hw_profile: s.hw_profile,
@@ -701,25 +856,41 @@ fn handle_ipc_request(
         }
         IpcRequest::TestAllVibration { device_id, intensities } => {
             if let Some(ctrl) = controllers.get_mut(&device_id) {
+                let is_gip = matches!(&ctrl.source, InputSource::UsbMiscDev { .. });
                 let fd = match &ctrl.source {
                     InputSource::Hidraw { file, .. } => file.as_raw_fd(),
                     InputSource::MiscDev { file } => file.as_raw_fd(),
+                    InputSource::UsbMiscDev { file } => file.as_raw_fd(),
                     _ => return IpcResponse::Error { message: "Not supported over evdev".into() },
                 };
                 std::thread::spawn(move || {
                     for motor in 0..4u8 {
                         let v = intensities[motor as usize].min(100);
-                        let mut report = [0x03u8, 0x0F, 0, 0, 0, 0, 0x20, 0x00, 0x00];
-                        match motor {
-                            0 => report[4] = v,
-                            1 => report[5] = v,
-                            2 => report[2] = v,
-                            3 => report[3] = v,
-                            _ => {}
-                        }
+                        let (report, stop): (Vec<u8>, Vec<u8>) = if is_gip {
+                            let mut r = vec![0x09u8, 0x00, 0x00, 0x09, 0x00, 0x0F, 0, 0, 0, 0, 0x20, 0x00, 0x00];
+                            match motor {
+                                0 => r[8] = v,   // strong
+                                1 => r[9] = v,   // weak
+                                2 => r[6] = v,   // LT
+                                3 => r[7] = v,   // RT
+                                _ => {}
+                            }
+                            let s = vec![0x09u8, 0x00, 0x00, 0x09, 0x00, 0x0F, 0, 0, 0, 0, 0x00, 0x00, 0x00];
+                            (r, s)
+                        } else {
+                            let mut r = vec![0x03u8, 0x0F, 0, 0, 0, 0, 0x20, 0x00, 0x00];
+                            match motor {
+                                0 => r[4] = v,   // strong
+                                1 => r[5] = v,   // weak
+                                2 => r[2] = v,   // LT
+                                3 => r[3] = v,   // RT
+                                _ => {}
+                            }
+                            let s = vec![0x03u8, 0x0F, 0, 0, 0, 0, 0x00, 0x00, 0x00];
+                            (r, s)
+                        };
                         unsafe { libc::write(fd, report.as_ptr() as *const _, report.len()); }
                         std::thread::sleep(std::time::Duration::from_millis(500));
-                        let stop = [0x03u8, 0x0F, 0, 0, 0, 0, 0x00, 0x00, 0x00];
                         unsafe { libc::write(fd, stop.as_ptr() as *const _, stop.len()); }
                         std::thread::sleep(std::time::Duration::from_millis(100));
                     }
@@ -732,57 +903,33 @@ fn handle_ipc_request(
     }
 }
 
-/// BT HID output report format for Xbox controllers:
-///   Report ID: 0x03
-///   Byte 1: 0x0F (enable all motors mask)
-///   Byte 2: left trigger motor (0-100)
-///   Byte 3: right trigger motor (0-100)
-///   Byte 4: main/strong motor (0-100)
-///   Byte 5: weak motor (0-100)
-///   Byte 6: duration (in 10ms units, 0xFF = ~2.5s)
-///   Byte 7: delay (in 10ms units)
-///   Byte 8: repeat count
 fn send_rumble(ctrl: &mut ControllerState, motor: u8, intensity: u8) -> anyhow::Result<()> {
     let v = intensity.min(100);
-    let mut report = [0x03u8, 0x0F, 0, 0, 0, 0, 0x20, 0x00, 0x00];
-
+    let (mut lt, mut rt, mut strong, mut weak) = (0u8, 0u8, 0u8, 0u8);
     match motor {
-        0 => report[4] = v,
-        1 => report[5] = v,
-        2 => report[2] = v,
-        3 => report[3] = v,
+        0 => strong = v,
+        1 => weak = v,
+        2 => lt = v,
+        3 => rt = v,
         _ => {}
     }
-
-    match &mut ctrl.source {
-        InputSource::Hidraw { file, .. } => {
-            use std::io::Write;
-            file.write_all(&report).context("write rumble")?;
-            let fd = file.as_raw_fd();
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(500));
-                let stop = [0x03u8, 0x0F, 0, 0, 0, 0, 0x00, 0x00, 0x00];
-                unsafe {
-                    libc::write(fd, stop.as_ptr() as *const _, stop.len());
-                }
-            });
-            Ok(())
-        }
-        InputSource::MiscDev { file } => {
-            use std::io::Write;
-            file.write_all(&report).context("write rumble")?;
-            let fd = file.as_raw_fd();
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(500));
-                let stop = [0x03u8, 0x0F, 0, 0, 0, 0, 0x00, 0x00, 0x00];
-                unsafe {
-                    libc::write(fd, stop.as_ptr() as *const _, stop.len());
-                }
-            });
-            Ok(())
-        }
-        InputSource::Evdev { .. } => {
-            anyhow::bail!("Vibration test not supported over evdev (USB) yet")
-        }
-    }
+    send_rumble_command(ctrl, lt, rt, strong, weak, 0x20)?;
+    // Auto-stop after 500ms
+    let fd = match &ctrl.source {
+        InputSource::Hidraw { file, .. } => file.as_raw_fd(),
+        InputSource::MiscDev { file } => file.as_raw_fd(),
+        InputSource::UsbMiscDev { file } => file.as_raw_fd(),
+        InputSource::Evdev { .. } => return Ok(()),
+    };
+    let is_gip = matches!(&ctrl.source, InputSource::UsbMiscDev { .. });
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let stop: Vec<u8> = if is_gip {
+            vec![0x09u8, 0x00, 0x00, 0x09, 0x00, 0x0F, 0, 0, 0, 0, 0x00, 0x00, 0x00]
+        } else {
+            vec![0x03u8, 0x0F, 0, 0, 0, 0, 0x00, 0x00, 0x00]
+        };
+        unsafe { libc::write(fd, stop.as_ptr() as *const _, stop.len()); }
+    });
+    Ok(())
 }

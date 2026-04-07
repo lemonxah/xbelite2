@@ -10,9 +10,9 @@ ACTION=="add", SUBSYSTEM=="hid", KERNEL=="0005:045E:0B22.*", \
 ACTION=="add", SUBSYSTEM=="hid", KERNEL=="0005:045E:0B05.*", \
     RUN+="/bin/sh -c 'echo %k > /sys/bus/hid/drivers/microsoft/unbind 2>/dev/null; echo %k > /sys/bus/hid/drivers/xbelite2/bind 2>/dev/null; true'"
 
-# USB (0x0B00): unbind xpad
-ACTION=="add", SUBSYSTEM=="hid", KERNEL=="0003:045E:0B00.*", \
-    RUN+="/bin/sh -c 'echo %k > /sys/bus/hid/drivers/xpad/unbind 2>/dev/null; echo %k > /sys/bus/hid/drivers/xbelite2/bind 2>/dev/null; true'"
+# USB (0x0B00): if xpad grabs the interface, unbind it and let xbelite2 claim it
+ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="xpad", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b00", \
+    RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/xpad/unbind 2>/dev/null; echo %k > /sys/bus/usb/drivers/xbelite2/bind 2>/dev/null; true'"
 
 # hidraw: ROOT ONLY — prevents Steam from seeing the raw device.
 # Only our daemon (running as root) accesses hidraw.
