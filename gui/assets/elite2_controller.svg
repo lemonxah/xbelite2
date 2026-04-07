@@ -1,0 +1,188 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" fill="none">
+  <!-- Xbox Elite Series 2 Controller - Front View -->
+
+  <!-- Main body -->
+  <path d="M400 80
+    C 340 80, 300 85, 270 95
+    C 240 105, 210 120, 185 145
+    C 160 170, 145 200, 130 240
+    C 115 280, 105 320, 100 360
+    C 95 400, 95 440, 105 475
+    C 115 510, 140 535, 175 545
+    C 210 555, 245 545, 270 520
+    C 295 495, 310 470, 330 450
+    C 350 430, 370 420, 400 420
+    C 430 420, 450 430, 470 450
+    C 490 470, 505 495, 530 520
+    C 555 545, 590 555, 625 545
+    C 660 535, 685 510, 695 475
+    C 705 440, 705 400, 700 360
+    C 695 320, 685 280, 670 240
+    C 655 200, 640 170, 615 145
+    C 590 120, 560 105, 530 95
+    C 500 85, 460 80, 400 80 Z"
+    fill="#1a1a1a" stroke="#333" stroke-width="3"/>
+
+  <!-- Left grip texture -->
+  <path d="M130 260 C 120 300, 110 340, 105 380 C 100 420, 100 450, 110 480 C 125 510, 150 530, 180 540"
+    fill="none" stroke="#222" stroke-width="20" stroke-linecap="round" opacity="0.3"/>
+
+  <!-- Right grip texture -->
+  <path d="M670 260 C 680 300, 690 340, 695 380 C 700 420, 700 450, 690 480 C 675 510, 650 530, 620 540"
+    fill="none" stroke="#222" stroke-width="20" stroke-linecap="round" opacity="0.3"/>
+
+  <!-- Top surface darker area -->
+  <path d="M400 85
+    C 350 85, 310 90, 275 100
+    C 245 110, 220 125, 200 150
+    C 185 170, 175 190, 165 215
+    L 400 215
+    L 635 215
+    C 625 190, 615 170, 600 150
+    C 580 125, 555 110, 525 100
+    C 490 90, 450 85, 400 85 Z"
+    fill="#161616" stroke="none"/>
+
+  <!-- Left Bumper (LB) -->
+  <rect id="btn-lb" x="190" y="88" width="100" height="22" rx="6"
+    fill="#2a2a2a" stroke="#444" stroke-width="1.5"/>
+  <text x="240" y="103" text-anchor="middle" fill="#888" font-size="11" font-family="sans-serif">LB</text>
+
+  <!-- Right Bumper (RB) -->
+  <rect id="btn-rb" x="510" y="88" width="100" height="22" rx="6"
+    fill="#2a2a2a" stroke="#444" stroke-width="1.5"/>
+  <text x="560" y="103" text-anchor="middle" fill="#888" font-size="11" font-family="sans-serif">RB</text>
+
+  <!-- Left Trigger -->
+  <path d="M215 75 C 225 60, 260 55, 280 60 L 275 80 C 260 76, 230 78, 220 82 Z"
+    fill="#222" stroke="#444" stroke-width="1"/>
+  <text x="248" y="72" text-anchor="middle" fill="#666" font-size="9" font-family="sans-serif">LT</text>
+
+  <!-- Right Trigger -->
+  <path d="M585 75 C 575 60, 540 55, 520 60 L 525 80 C 540 76, 570 78, 580 82 Z"
+    fill="#222" stroke="#444" stroke-width="1"/>
+  <text x="552" y="72" text-anchor="middle" fill="#666" font-size="9" font-family="sans-serif">RT</text>
+
+  <!-- Xbox button -->
+  <circle id="btn-xbox" cx="400" cy="155" r="18" fill="#111" stroke="#333" stroke-width="2"/>
+  <circle cx="400" cy="155" r="12" fill="none" stroke="#107c10" stroke-width="1.5"/>
+  <!-- Xbox logo simplified -->
+  <text x="400" y="159" text-anchor="middle" fill="#107c10" font-size="12" font-family="sans-serif" font-weight="bold">X</text>
+
+  <!-- View button (left of Xbox) -->
+  <rect id="btn-view" x="330" y="180" width="24" height="16" rx="3"
+    fill="#222" stroke="#444" stroke-width="1"/>
+  <text x="342" y="191" text-anchor="middle" fill="#666" font-size="8" font-family="sans-serif">⊞</text>
+
+  <!-- Menu button (right of Xbox) -->
+  <rect id="btn-menu" x="446" y="180" width="24" height="16" rx="3"
+    fill="#222" stroke="#444" stroke-width="1"/>
+  <text x="458" y="191" text-anchor="middle" fill="#666" font-size="8" font-family="sans-serif">≡</text>
+
+  <!-- Left Stick -->
+  <circle cx="295" cy="225" r="35" fill="#111" stroke="#333" stroke-width="2"/>
+  <circle id="btn-lstick" cx="295" cy="225" r="25" fill="#1a1a1a" stroke="#444" stroke-width="1.5"/>
+  <!-- Stick texture rings -->
+  <circle cx="295" cy="225" r="18" fill="none" stroke="#282828" stroke-width="1"/>
+  <circle cx="295" cy="225" r="12" fill="none" stroke="#282828" stroke-width="1"/>
+
+  <!-- Right Stick -->
+  <circle cx="505" cy="310" r="30" fill="#111" stroke="#333" stroke-width="2"/>
+  <circle id="btn-rstick" cx="505" cy="310" r="22" fill="#1a1a1a" stroke="#444" stroke-width="1.5"/>
+  <circle cx="505" cy="310" r="16" fill="none" stroke="#282828" stroke-width="1"/>
+  <circle cx="505" cy="310" r="10" fill="none" stroke="#282828" stroke-width="1"/>
+
+  <!-- D-Pad (metallic disc style for Elite 2) -->
+  <circle cx="295" cy="330" r="30" fill="#2a2a2a" stroke="#444" stroke-width="2"/>
+  <!-- D-pad cross -->
+  <rect x="283" y="305" width="24" height="50" rx="3" fill="#333" stroke="#444" stroke-width="1"/>
+  <rect x="270" y="318" width="50" height="24" rx="3" fill="#333" stroke="#444" stroke-width="1"/>
+  <!-- D-pad center -->
+  <circle cx="295" cy="330" r="8" fill="#2a2a2a" stroke="#444" stroke-width="1"/>
+  <!-- D-pad arrows -->
+  <text x="295" y="315" text-anchor="middle" fill="#666" font-size="10">▲</text>
+  <text x="295" y="352" text-anchor="middle" fill="#666" font-size="10">▼</text>
+  <text x="276" y="334" text-anchor="middle" fill="#666" font-size="10">◀</text>
+  <text x="314" y="334" text-anchor="middle" fill="#666" font-size="10">▶</text>
+
+  <!-- Face Buttons -->
+  <!-- Y - top -->
+  <circle id="btn-y" cx="505" cy="195" r="16" fill="#222" stroke="#c8b517" stroke-width="2"/>
+  <text x="505" y="200" text-anchor="middle" fill="#c8b517" font-size="14" font-family="sans-serif" font-weight="bold">Y</text>
+
+  <!-- B - right -->
+  <circle id="btn-b" cx="545" cy="235" r="16" fill="#222" stroke="#e74c3c" stroke-width="2"/>
+  <text x="545" y="240" text-anchor="middle" fill="#e74c3c" font-size="14" font-family="sans-serif" font-weight="bold">B</text>
+
+  <!-- A - bottom -->
+  <circle id="btn-a" cx="505" cy="275" r="16" fill="#222" stroke="#107c10" stroke-width="2"/>
+  <text x="505" y="280" text-anchor="middle" fill="#107c10" font-size="14" font-family="sans-serif" font-weight="bold">A</text>
+
+  <!-- X - left -->
+  <circle id="btn-x" cx="465" cy="235" r="16" fill="#222" stroke="#0078d4" stroke-width="2"/>
+  <text x="465" y="240" text-anchor="middle" fill="#0078d4" font-size="14" font-family="sans-serif" font-weight="bold">X</text>
+
+  <!-- Profile button (bottom center) -->
+  <rect x="385" y="385" width="30" height="12" rx="4" fill="#222" stroke="#444" stroke-width="1"/>
+  <circle cx="393" cy="391" r="2" fill="#555"/>
+  <circle cx="400" cy="391" r="2" fill="#107c10"/>
+  <circle cx="407" cy="391" r="2" fill="#555"/>
+
+  <!-- Share button (bottom center, small) -->
+  <circle cx="400" cy="210" r="6" fill="#222" stroke="#444" stroke-width="1"/>
+
+  <!-- Back paddles (shown as outlines behind grips) -->
+  <!-- Upper Left Paddle (P3) -->
+  <path id="btn-p3" d="M155 300 C 148 310, 140 340, 140 360 C 140 380, 145 395, 155 400
+    C 160 395, 163 380, 163 360 C 163 340, 160 315, 158 305 Z"
+    fill="#2a2a2a" stroke="#e67e22" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+  <!-- Lower Left Paddle (P4) -->
+  <path id="btn-p4" d="M135 410 C 130 420, 125 445, 130 465 C 135 480, 145 490, 160 492
+    C 162 485, 160 465, 155 445 C 150 430, 142 418, 138 412 Z"
+    fill="#2a2a2a" stroke="#e67e22" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+  <!-- Upper Right Paddle (P1) -->
+  <path id="btn-p1" d="M645 300 C 652 310, 660 340, 660 360 C 660 380, 655 395, 645 400
+    C 640 395, 637 380, 637 360 C 637 340, 640 315, 642 305 Z"
+    fill="#2a2a2a" stroke="#e67e22" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+  <!-- Lower Right Paddle (P2) -->
+  <path id="btn-p2" d="M665 410 C 670 420, 675 445, 670 465 C 665 480, 655 490, 640 492
+    C 638 485, 640 465, 645 445 C 650 430, 658 418, 662 412 Z"
+    fill="#2a2a2a" stroke="#e67e22" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+  <!-- Paddle labels -->
+  <text x="125" y="355" text-anchor="middle" fill="#e67e22" font-size="10" font-family="sans-serif" opacity="0.8">P3</text>
+  <text x="115" y="460" text-anchor="middle" fill="#e67e22" font-size="10" font-family="sans-serif" opacity="0.8">P4</text>
+  <text x="675" y="355" text-anchor="middle" fill="#e67e22" font-size="10" font-family="sans-serif" opacity="0.8">P1</text>
+  <text x="685" y="460" text-anchor="middle" fill="#e67e22" font-size="10" font-family="sans-serif" opacity="0.8">P2</text>
+
+  <!-- Grip texture lines (Elite 2 rubberized grip) -->
+  <g opacity="0.15" stroke="#555" stroke-width="0.8">
+    <line x1="140" y1="280" x2="120" y2="400"/>
+    <line x1="148" y1="278" x2="128" y2="398"/>
+    <line x1="156" y1="276" x2="136" y2="396"/>
+    <line x1="660" y1="280" x2="680" y2="400"/>
+    <line x1="652" y1="278" x2="672" y2="398"/>
+    <line x1="644" y1="276" x2="664" y2="396"/>
+  </g>
+
+  <!-- Surface texture (subtle diamond pattern on face) -->
+  <g opacity="0.06" fill="#fff">
+    <circle cx="360" cy="280" r="1"/>
+    <circle cx="370" cy="290" r="1"/>
+    <circle cx="380" cy="280" r="1"/>
+    <circle cx="390" cy="290" r="1"/>
+    <circle cx="360" cy="300" r="1"/>
+    <circle cx="370" cy="310" r="1"/>
+    <circle cx="380" cy="300" r="1"/>
+    <circle cx="390" cy="310" r="1"/>
+    <circle cx="400" cy="280" r="1"/>
+    <circle cx="410" cy="290" r="1"/>
+    <circle cx="420" cy="280" r="1"/>
+    <circle cx="400" cy="300" r="1"/>
+    <circle cx="410" cy="310" r="1"/>
+    <circle cx="420" cy="300" r="1"/>
+  </g>
+</svg>

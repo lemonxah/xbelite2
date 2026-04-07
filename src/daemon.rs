@@ -1,14 +1,7 @@
-//! Main daemon loop.
-//!
-//! Unified driver for Xbox Elite Series 2 via hidraw (BT and USB).
-//! Falls back to evdev when xpad is still bound (USB only).
-//!
-//! Reads raw HID reports, parses paddles + profile from confirmed
-//! byte offsets, applies profile transforms, emits via uinput.
-
 use std::collections::HashMap;
 use std::fs::OpenOptions;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixListener;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,18 +16,16 @@ use xbelite2::transform;
 use xbelite2::types::*;
 use xbelite2::uinput::VirtualGamepad;
 
-/// Input source — either hidraw (preferred) or evdev (fallback).
 enum InputSource {
     Hidraw {
         file: std::fs::File,
-        _grab: Option<std::fs::File>, // Grabbed evdev to prevent duplicates
+        _grab: Option<std::fs::File>,
     },
     Evdev {
         reader: evdev::EvdevReader,
     },
 }
 
-/// State for a single connected controller.
 struct ControllerState {
     source: InputSource,
     gamepad: VirtualGamepad,
@@ -61,6 +52,8 @@ pub fn run(running: Arc<AtomicBool>) -> Result<()> {
     let _ = std::fs::remove_file(&sock_path);
     let listener = UnixListener::bind(&sock_path).context("bind IPC socket")?;
     listener.set_nonblocking(true).context("set socket nonblocking")?;
+    // Make socket world-accessible so non-root GUI can connect
+    let _ = std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o666));
     log::info!("IPC socket at {}", sock_path.display());
 
     discover_and_attach(&mut controllers)?;
@@ -86,7 +79,7 @@ pub fn run(running: Arc<AtomicBool>) -> Result<()> {
             }
         }
 
-        let ipc_fd_idx = pollfds.len();
+        let _ipc_fd_idx = pollfds.len();
         pollfds.push(libc::pollfd {
             fd: listener.as_raw_fd(),
             events: libc::POLLIN,
@@ -121,11 +114,9 @@ pub fn run(running: Arc<AtomicBool>) -> Result<()> {
             controllers.remove(&id);
         }
 
-        if pollfds[ipc_fd_idx].revents & libc::POLLIN != 0 {
-            handle_ipc(&listener, &mut controllers);
-        }
+        handle_ipc(&listener, &mut controllers);
 
-        if last_scan.elapsed() >= scan_interval {
+        if controllers.is_empty() && last_scan.elapsed() >= scan_interval {
             discover_and_attach(&mut controllers)?;
             last_scan = std::time::Instant::now();
         }
@@ -137,7 +128,6 @@ pub fn run(running: Arc<AtomicBool>) -> Result<()> {
 }
 
 fn discover_and_attach(controllers: &mut HashMap<String, ControllerState>) -> Result<()> {
-    // Try hidraw first (works for both BT and USB-via-usbhid)
     let hidraw_devices = hidraw::discover_devices().unwrap_or_default();
     for (idx, device) in hidraw_devices.into_iter().enumerate() {
         let device_id = format!("hidraw:{}", device.path.display());
@@ -153,15 +143,12 @@ fn discover_and_attach(controllers: &mut HashMap<String, ControllerState>) -> Re
         }
     }
 
-    // Fallback: try evdev (for USB when xpad is still bound)
     let evdev_devices = evdev::discover_devices().unwrap_or_default();
     for (idx, device) in evdev_devices.into_iter().enumerate() {
         let device_id = format!("evdev:{}", device.path.display());
-        // Don't add evdev if we already have a hidraw for this controller
         if controllers.contains_key(&device_id) {
             continue;
         }
-        // Skip if we already have a hidraw source (same physical device)
         let already_have = controllers.values().any(|c| {
             matches!(&c.source, InputSource::Hidraw { .. })
         });
@@ -190,11 +177,10 @@ fn setup_hidraw_controller(device: hidraw::HidrawDevice, idx: usize) -> Result<C
         .open(&device.path)
         .with_context(|| format!("open {}", device.path.display()))?;
 
-    // Grab the corresponding evdev to prevent duplicate events
     let grab = grab_evdev_for_hidraw(&device.path);
 
     let gamepad = VirtualGamepad::new(idx)?;
-    let config = config::load_config("elite2").unwrap_or_default();
+    let config = DeviceConfig::default();
 
     Ok(ControllerState {
         source: InputSource::Hidraw { file, _grab: grab },
@@ -210,8 +196,8 @@ fn setup_evdev_controller(device: evdev::EvdevDevice, idx: usize) -> Result<Cont
     let mut reader = evdev::EvdevReader::open(device)?;
     reader.grab()?;
 
-    let gamepad = VirtualGamepad::new(idx + 10)?; // Offset to avoid collision
-    let config = config::load_config("elite2").unwrap_or_default();
+    let gamepad = VirtualGamepad::new(idx + 10)?;
+    let config = DeviceConfig::default();
 
     Ok(ControllerState {
         source: InputSource::Evdev { reader },
@@ -235,14 +221,22 @@ fn process_events(ctrl: &mut ControllerState) -> Result<()> {
                 return Ok(());
             }
             let current = parse_hidraw_report(&buf[..n]);
-            let active_idx = ctrl.config.active_override
-                .unwrap_or_else(|| ctrl.config.hw_profile_map[current.hw_profile as usize]);
-            let profile = ctrl.config.profiles.get(active_idx)
-                .or_else(|| ctrl.config.profiles.first());
-            if let Some(profile) = profile {
-                let events = transform::transform(&current, &ctrl.prev_state, profile);
+
+            if current.hw_profile == 0 {
+                let identity = Profile::default();
+                let events = transform::transform(&current, &ctrl.prev_state, &identity);
                 if !events.is_empty() {
                     ctrl.gamepad.emit(&events)?;
+                }
+            } else {
+                let sw_idx = (current.hw_profile as usize).saturating_sub(1);
+                let profile = ctrl.config.profiles.get(sw_idx)
+                    .or_else(|| ctrl.config.profiles.first());
+                if let Some(profile) = profile {
+                    let events = transform::transform(&current, &ctrl.prev_state, profile);
+                    if !events.is_empty() {
+                        ctrl.gamepad.emit(&events)?;
+                    }
                 }
             }
             ctrl.prev_state = current;
@@ -268,44 +262,79 @@ fn process_events(ctrl: &mut ControllerState) -> Result<()> {
     Ok(())
 }
 
-/// Parse raw HID report (confirmed from hardware capture).
+/// Parse raw HID report from BLE HID descriptor analysis.
+///
+/// Report ID 0x01, 20 bytes total:
+///   Bytes 1-2:   Left Stick X  (UNSIGNED u16, 0-65535, center=32768)
+///   Bytes 3-4:   Left Stick Y  (UNSIGNED u16, 0-65535, center=32768)
+///   Bytes 5-6:   Right Stick X (UNSIGNED u16, 0-65535, center=32768)
+///   Bytes 7-8:   Right Stick Y (UNSIGNED u16, 0-65535, center=32768)
+///   Bytes 9-10:  Left Trigger  (10-bit + 6 padding, 0-1023)
+///   Bytes 11-12: Right Trigger (10-bit + 6 padding, 0-1023)
+///   Byte  13:    Hat switch (4 bits, 1-8=directions, 0=centered) + 4 padding
+///   Bytes 14-15: 12 buttons (1 bit each) + 4 padding
+///   Byte  16:    Share button (1 bit) + 7 padding
+///   Byte  17:    Profile number (consumer usage 0x0085)
+///   Byte  18:    Trigger mode (consumer usage 0x0099, 4 bits + 4 padding)
+///   Byte  19:    Paddles (consumer usage 0x0081, 4 bits + 4 padding)
 fn parse_hidraw_report(data: &[u8]) -> GamepadState {
     let mut state = GamepadState::default();
 
-    let b0 = data[1];
-    let b1 = data[2];
-
-    state.btn_a = b0 & 0x01 != 0;
-    state.btn_b = b0 & 0x02 != 0;
-    state.btn_x = b0 & 0x08 != 0;
-    state.btn_y = b0 & 0x10 != 0;
-    state.btn_lb = b0 & 0x40 != 0;
-    state.btn_rb = b0 & 0x80 != 0;
-    state.btn_view = b1 & 0x04 != 0;
-    state.btn_menu = b1 & 0x08 != 0;
-    state.btn_lstick = b1 & 0x20 != 0;
-    state.btn_rstick = b1 & 0x40 != 0;
-
-    // TODO: confirm d-pad encoding from hardware capture
-    // For now, d-pad bits might be in byte 2 lower nibble or separate
-
-    if data.len() >= 7 {
-        state.left_trigger = u16::from_le_bytes([data[3], data[4]]) & 0x03FF;
-        state.right_trigger = u16::from_le_bytes([data[5], data[6]]) & 0x03FF;
-    }
-    if data.len() >= 15 {
-        state.left_stick_x = i16::from_le_bytes([data[7], data[8]]);
-        state.left_stick_y = i16::from_le_bytes([data[9], data[10]]);
-        state.right_stick_x = i16::from_le_bytes([data[11], data[12]]);
-        state.right_stick_y = i16::from_le_bytes([data[13], data[14]]);
+    if data.len() < 16 {
+        return state;
     }
 
-    // Byte 17: profile, Byte 19: paddles (confirmed from hardware)
+    // Sticks: UNSIGNED u16 (0-65535), convert to signed (-32768..32767)
+    let lsx = u16::from_le_bytes([data[1], data[2]]);
+    let lsy = u16::from_le_bytes([data[3], data[4]]);
+    let rsx = u16::from_le_bytes([data[5], data[6]]);
+    let rsy = u16::from_le_bytes([data[7], data[8]]);
+    state.left_stick_x = (lsx as i32 - 32768) as i16;
+    state.left_stick_y = (lsy as i32 - 32768) as i16;
+    state.right_stick_x = (rsx as i32 - 32768) as i16;
+    state.right_stick_y = (rsy as i32 - 32768) as i16;
+
+    // Triggers: 10-bit (0-1023) packed in 16 bits with 6 padding
+    state.left_trigger = u16::from_le_bytes([data[9], data[10]]) & 0x03FF;
+    state.right_trigger = u16::from_le_bytes([data[11], data[12]]) & 0x03FF;
+
+    // Hat switch (d-pad): byte 13, lower 4 bits
+    // 0=centered, 1=N, 2=NE, 3=E, 4=SE, 5=S, 6=SW, 7=W, 8=NW
+    let hat = data[13] & 0x0F;
+    match hat {
+        1 => state.dpad_up = true,
+        2 => { state.dpad_up = true; state.dpad_right = true; }
+        3 => state.dpad_right = true,
+        4 => { state.dpad_down = true; state.dpad_right = true; }
+        5 => state.dpad_down = true,
+        6 => { state.dpad_down = true; state.dpad_left = true; }
+        7 => state.dpad_left = true,
+        8 => { state.dpad_up = true; state.dpad_left = true; }
+        _ => {} // 0 = centered
+    }
+
+    // Buttons: bytes 14-15, 12 sequential bits (HID usage 1-12)
+    let btns = u16::from_le_bytes([data[14], data[15]]);
+    state.btn_a      = btns & (1 << 0) != 0;  // Button 1
+    state.btn_b      = btns & (1 << 1) != 0;  // Button 2
+    state.btn_x      = btns & (1 << 2) != 0;  // Button 3
+    state.btn_y      = btns & (1 << 3) != 0;  // Button 4
+    state.btn_lb     = btns & (1 << 4) != 0;  // Button 5
+    state.btn_rb     = btns & (1 << 5) != 0;  // Button 6
+    state.btn_view   = btns & (1 << 6) != 0;  // Button 7
+    state.btn_menu   = btns & (1 << 7) != 0;  // Button 8
+    state.btn_lstick = btns & (1 << 8) != 0;  // Button 9 = L Stick click
+    state.btn_rstick = btns & (1 << 9) != 0;  // Button 10 = R Stick click
+    state.btn_xbox   = btns & (1 << 10) != 0; // Button 11 = Xbox/Guide
+
+    // Profile: byte 17
     if data.len() > 17 {
         state.hw_profile = data[17] & 0x03;
     }
+
+    // Paddles: byte 19
     if data.len() > 19 {
-        let paddles = data[19];
+        let paddles = data[19] & 0x0F;
         state.paddle_ur = paddles & 0x01 != 0;
         state.paddle_lr = paddles & 0x02 != 0;
         state.paddle_ul = paddles & 0x04 != 0;
@@ -385,32 +414,48 @@ fn grab_evdev_for_hidraw(hidraw_path: &std::path::Path) -> Option<std::fs::File>
     None
 }
 
+static mut IPC_CLIENTS: Vec<std::os::unix::net::UnixStream> = Vec::new();
+
 fn handle_ipc(listener: &UnixListener, controllers: &mut HashMap<String, ControllerState>) {
-    let (stream, _) = match listener.accept() {
-        Ok(s) => s,
-        Err(_) => return,
-    };
+    while let Ok((stream, _)) = listener.accept() {
+        stream.set_nonblocking(true).ok();
+        unsafe { IPC_CLIENTS.push(stream); }
+    }
 
-    let reader = BufReader::new(&stream);
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
+    let clients = unsafe { &mut IPC_CLIENTS };
+    let mut to_remove = Vec::new();
 
-        let request: IpcRequest = match serde_json::from_str(&line) {
-            Ok(r) => r,
-            Err(e) => {
-                let resp = IpcResponse::Error {
-                    message: format!("Invalid request: {e}"),
-                };
-                let _ = writeln!(&stream, "{}", serde_json::to_string(&resp).unwrap());
-                continue;
+    for (i, stream) in clients.iter_mut().enumerate() {
+        let mut buf = [0u8; 4096];
+        let mut pos = 0;
+        loop {
+            match std::io::Read::read(stream, &mut buf[pos..pos+1]) {
+                Ok(0) => { to_remove.push(i); break; }
+                Ok(_) => {
+                    if buf[pos] == b'\n' {
+                        if let Ok(line) = std::str::from_utf8(&buf[..pos]) {
+                            let response = match serde_json::from_str::<IpcRequest>(line) {
+                                Ok(req) => handle_ipc_request(req, controllers),
+                                Err(e) => IpcResponse::Error { message: format!("Invalid: {e}") },
+                            };
+                            let _ = writeln!(stream, "{}", serde_json::to_string(&response).unwrap());
+                        }
+                        pos = 0;
+                        continue;
+                    }
+                    pos += 1;
+                    if pos >= 4095 { pos = 0; }
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(_) => { to_remove.push(i); break; }
             }
-        };
+        }
+    }
 
-        let response = handle_ipc_request(request, controllers);
-        let _ = writeln!(&stream, "{}", serde_json::to_string(&response).unwrap());
+    to_remove.sort();
+    to_remove.dedup();
+    for i in to_remove.into_iter().rev() {
+        clients.remove(i);
     }
 }
 
@@ -422,15 +467,47 @@ fn handle_ipc_request(
         IpcRequest::GetStatus => {
             let devices: Vec<DeviceStatus> = controllers
                 .values()
-                .map(|ctrl| DeviceStatus {
-                    device_id: ctrl.device_id.clone(),
-                    name: match &ctrl.source {
-                        InputSource::Hidraw { .. } => "Elite 2 (hidraw)".to_string(),
-                        InputSource::Evdev { reader } => reader.info.name.clone(),
-                    },
-                    hw_profile: ctrl.prev_state.hw_profile,
-                    active_profile: ctrl.config.active_override.unwrap_or(0),
-                    connected: true,
+                .map(|ctrl| {
+                    let s = &ctrl.prev_state;
+                    let mut buttons: u16 = 0;
+                    if s.btn_a { buttons |= 1 << 0; }
+                    if s.btn_b { buttons |= 1 << 1; }
+                    if s.btn_x { buttons |= 1 << 2; }
+                    if s.btn_y { buttons |= 1 << 3; }
+                    if s.btn_lb { buttons |= 1 << 4; }
+                    if s.btn_rb { buttons |= 1 << 5; }
+                    if s.btn_view { buttons |= 1 << 6; }
+                    if s.btn_menu { buttons |= 1 << 7; }
+                    if s.btn_xbox { buttons |= 1 << 8; }
+                    if s.btn_lstick { buttons |= 1 << 9; }
+                    if s.btn_rstick { buttons |= 1 << 10; }
+                    if s.dpad_up { buttons |= 1 << 11; }
+                    if s.dpad_down { buttons |= 1 << 12; }
+                    if s.dpad_left { buttons |= 1 << 13; }
+                    if s.dpad_right { buttons |= 1 << 14; }
+                    let mut paddles: u8 = 0;
+                    if s.paddle_ur { paddles |= 0x01; }
+                    if s.paddle_lr { paddles |= 0x02; }
+                    if s.paddle_ul { paddles |= 0x04; }
+                    if s.paddle_ll { paddles |= 0x08; }
+                    DeviceStatus {
+                        device_id: ctrl.device_id.clone(),
+                        name: match &ctrl.source {
+                            InputSource::Hidraw { .. } => "Elite 2 (hidraw)".to_string(),
+                            InputSource::Evdev { reader } => reader.info.name.clone(),
+                        },
+                        hw_profile: s.hw_profile,
+                        active_profile: ctrl.config.active_override.unwrap_or(0),
+                        connected: true,
+                        buttons,
+                        paddles,
+                        left_stick_x: s.left_stick_x,
+                        left_stick_y: s.left_stick_y,
+                        right_stick_x: s.right_stick_x,
+                        right_stick_y: s.right_stick_y,
+                        left_trigger: s.left_trigger,
+                        right_trigger: s.right_trigger,
+                    }
                 })
                 .collect();
             IpcResponse::Status { devices }
@@ -444,10 +521,8 @@ fn handle_ipc_request(
         }
         IpcRequest::SetConfig { device_id, config } => {
             if let Some(ctrl) = controllers.get_mut(&device_id) {
-                ctrl.config = config.clone();
-                if let Err(e) = config::save_config("elite2", &config) {
-                    return IpcResponse::Error { message: format!("Failed to save: {e}") };
-                }
+                ctrl.config = config;
+                log::info!("Config updated via IPC for {device_id}");
                 IpcResponse::Ok
             } else {
                 IpcResponse::Error { message: format!("Device {device_id} not found") }
@@ -462,18 +537,96 @@ fn handle_ipc_request(
             }
         }
         IpcRequest::ListProfiles => {
-            let dir = config::config_dir();
-            let profiles = std::fs::read_dir(&dir)
-                .map(|entries| {
-                    entries.flatten()
-                        .filter_map(|e| {
-                            let name = e.file_name().to_str()?.to_string();
-                            name.ends_with(".json").then_some(name)
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+            let mut profiles = Vec::new();
+            for ctrl in controllers.values() {
+                for p in &ctrl.config.profiles {
+                    if !profiles.contains(&p.name) {
+                        profiles.push(p.name.clone());
+                    }
+                }
+            }
             IpcResponse::ProfileList { profiles }
+        }
+        IpcRequest::TestVibration { device_id, motor, intensity } => {
+            if let Some(ctrl) = controllers.get_mut(&device_id) {
+                match send_rumble(ctrl, motor, intensity) {
+                    Ok(()) => IpcResponse::Ok,
+                    Err(e) => IpcResponse::Error { message: format!("Rumble failed: {e}") },
+                }
+            } else {
+                IpcResponse::Error { message: format!("Device {device_id} not found") }
+            }
+        }
+        IpcRequest::TestAllVibration { device_id, intensities } => {
+            if let Some(ctrl) = controllers.get_mut(&device_id) {
+                let fd = match &ctrl.source {
+                    InputSource::Hidraw { file, .. } => file.as_raw_fd(),
+                    _ => return IpcResponse::Error { message: "Not supported over evdev".into() },
+                };
+                std::thread::spawn(move || {
+                    for motor in 0..4u8 {
+                        let v = intensities[motor as usize].min(100);
+                        let mut report = [0x03u8, 0x0F, 0, 0, 0, 0, 0x20, 0x00, 0x00];
+                        match motor {
+                            0 => report[4] = v,
+                            1 => report[5] = v,
+                            2 => report[2] = v,
+                            3 => report[3] = v,
+                            _ => {}
+                        }
+                        unsafe { libc::write(fd, report.as_ptr() as *const _, report.len()); }
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        let stop = [0x03u8, 0x0F, 0, 0, 0, 0, 0x00, 0x00, 0x00];
+                        unsafe { libc::write(fd, stop.as_ptr() as *const _, stop.len()); }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                });
+                IpcResponse::Ok
+            } else {
+                IpcResponse::Error { message: format!("Device {device_id} not found") }
+            }
+        }
+    }
+}
+
+/// BT HID output report format for Xbox controllers:
+///   Report ID: 0x03
+///   Byte 1: 0x0F (enable all motors mask)
+///   Byte 2: left trigger motor (0-100)
+///   Byte 3: right trigger motor (0-100)
+///   Byte 4: main/strong motor (0-100)
+///   Byte 5: weak motor (0-100)
+///   Byte 6: duration (in 10ms units, 0xFF = ~2.5s)
+///   Byte 7: delay (in 10ms units)
+///   Byte 8: repeat count
+fn send_rumble(ctrl: &mut ControllerState, motor: u8, intensity: u8) -> anyhow::Result<()> {
+    let v = intensity.min(100);
+    let mut report = [0x03u8, 0x0F, 0, 0, 0, 0, 0x20, 0x00, 0x00];
+
+    match motor {
+        0 => report[4] = v,
+        1 => report[5] = v,
+        2 => report[2] = v,
+        3 => report[3] = v,
+        _ => {}
+    }
+
+    match &mut ctrl.source {
+        InputSource::Hidraw { file, .. } => {
+            use std::io::Write;
+            file.write_all(&report).context("write rumble")?;
+            let fd = file.as_raw_fd();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let stop = [0x03u8, 0x0F, 0, 0, 0, 0, 0x00, 0x00, 0x00];
+                unsafe {
+                    libc::write(fd, stop.as_ptr() as *const _, stop.len());
+                }
+            });
+            Ok(())
+        }
+        InputSource::Evdev { .. } => {
+            anyhow::bail!("Vibration test not supported over evdev (USB) yet")
         }
     }
 }

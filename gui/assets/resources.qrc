@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/assets">
+        <file alias="controller.svg">xbox_controller_labels.svg</file>
+        <file alias="elite2.png">elite2.png</file>
+    </qresource>
+</RCC>

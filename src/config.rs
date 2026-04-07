@@ -1,9 +1,3 @@
-//! Profile configuration persistence and IPC.
-//!
-//! Profiles are stored as JSON files in ~/.config/xbelite2/profiles/.
-//! A Unix domain socket at /run/xbelite2.sock provides IPC for
-//! a GUI configuration app to communicate with the running daemon.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -11,8 +5,9 @@ use anyhow::{Context, Result};
 
 use crate::types::{DeviceConfig, Profile};
 
-/// Get the configuration directory path.
-pub fn config_dir() -> PathBuf {
+/// Get the user-space configuration directory.
+/// Used by the GUI (which runs as the user) — NOT the daemon.
+pub fn user_config_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
         PathBuf::from(dir).join("xbelite2")
     } else if let Ok(home) = std::env::var("HOME") {
@@ -24,16 +19,12 @@ pub fn config_dir() -> PathBuf {
 
 /// Get the socket path for IPC.
 pub fn socket_path() -> PathBuf {
-    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
-        PathBuf::from(dir).join("xbelite2.sock")
-    } else {
-        PathBuf::from("/run/xbelite2.sock")
-    }
+    PathBuf::from("/run/xbelite2.sock")
 }
 
-/// Load device configuration from disk.
-pub fn load_config(device_id: &str) -> Result<DeviceConfig> {
-    let path = config_dir().join(format!("{device_id}.json"));
+/// Load device configuration from a given directory.
+pub fn load_config_from(dir: &Path, device_id: &str) -> Result<DeviceConfig> {
+    let path = dir.join(format!("{device_id}.json"));
     if !path.exists() {
         log::info!("No config found at {}, using defaults", path.display());
         return Ok(DeviceConfig::default());
@@ -46,10 +37,9 @@ pub fn load_config(device_id: &str) -> Result<DeviceConfig> {
     Ok(config)
 }
 
-/// Save device configuration to disk.
-pub fn save_config(device_id: &str, config: &DeviceConfig) -> Result<()> {
-    let dir = config_dir();
-    fs::create_dir_all(&dir).context("create config dir")?;
+/// Save device configuration to a given directory.
+pub fn save_config_to(dir: &Path, device_id: &str, config: &DeviceConfig) -> Result<()> {
+    fs::create_dir_all(dir).context("create config dir")?;
     let path = dir.join(format!("{device_id}.json"));
     let data = serde_json::to_string_pretty(config).context("serialize config")?;
     fs::write(&path, data).with_context(|| format!("write config {}", path.display()))?;
@@ -79,9 +69,9 @@ pub fn load_profile(path: &Path) -> Result<Profile> {
 pub enum IpcRequest {
     /// Get current status (connected devices, active profiles)
     GetStatus,
-    /// Get the full config for a device
+    /// Get the full config for a device (from daemon's in-memory state)
     GetConfig { device_id: String },
-    /// Set the full config for a device
+    /// Set the full config for a device (GUI sends this after loading/editing)
     SetConfig {
         device_id: String,
         config: DeviceConfig,
@@ -93,6 +83,17 @@ pub enum IpcRequest {
     },
     /// List all profile files
     ListProfiles,
+    /// Test vibration on a specific motor (0=main, 1=weak, 2=lt, 3=rt), intensity 0-100
+    TestVibration {
+        device_id: String,
+        motor: u8,
+        intensity: u8,
+    },
+    /// Test all 4 motors sequentially, 500ms each
+    TestAllVibration {
+        device_id: String,
+        intensities: [u8; 4],
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -120,4 +121,13 @@ pub struct DeviceStatus {
     pub hw_profile: u8,
     pub active_profile: usize,
     pub connected: bool,
+    // Live input state
+    pub buttons: u16,      // Bitmask of pressed buttons
+    pub paddles: u8,       // Bitmask of pressed paddles
+    pub left_stick_x: i16,
+    pub left_stick_y: i16,
+    pub right_stick_x: i16,
+    pub right_stick_y: i16,
+    pub left_trigger: u16,
+    pub right_trigger: u16,
 }

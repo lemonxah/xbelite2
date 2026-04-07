@@ -1,0 +1,41 @@
+pkgname=xbelite2
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Xbox Elite Series 2 controller driver and configurator for Linux'
+arch=('x86_64')
+url='https://github.com/lemonxah/xboxelite2'
+license=('GPL-2.0-only')
+depends=('qt6-base' 'qt6-declarative')
+makedepends=('rust' 'cargo')
+backup=('etc/udev/rules.d/99-xbelite2.rules')
+source=()
+
+build() {
+    cd "$startdir"
+    cargo build --release
+    cd gui
+    cargo build --release
+}
+
+package() {
+    cd "$startdir"
+
+    install -Dm755 target/release/xbelite2d "$pkgdir/usr/bin/xbelite2d"
+    install -Dm755 gui/target/release/xbelite2-gui "$pkgdir/usr/bin/xbelite2-gui"
+    install -Dm644 xbelite2d.service "$pkgdir/usr/lib/systemd/system/xbelite2d.service"
+    install -Dm644 99-xbelite2.rules "$pkgdir/etc/udev/rules.d/99-xbelite2.rules"
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+    install -Dm644 docs/elite2.png "$pkgdir/usr/share/doc/$pkgname/elite2.png"
+
+    # Desktop entry for the GUI
+    install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/xbelite2-gui.desktop" <<EOF
+[Desktop Entry]
+Name=Xbox Elite 2 Configurator
+Comment=Configure Xbox Elite Series 2 controller profiles
+Exec=xbelite2-gui
+Icon=input-gaming
+Terminal=false
+Type=Application
+Categories=Settings;HardwareSettings;
+EOF
+}

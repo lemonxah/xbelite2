@@ -56,8 +56,23 @@ pub fn discover_devices() -> Result<Vec<HidrawDevice>> {
         }
 
         if let Ok(dev) = probe_hidraw(&path) {
-            if crate::hid::is_elite2(dev.vendor, dev.product) {
-                log::info!("Found Elite 2: {} ({})", dev.name, path.display());
+            // Match by specific Elite 2 PIDs, or by 0x028E (BT spoofed) + BT bus
+            let is_ms = dev.vendor == crate::types::VENDOR_MICROSOFT;
+            let is_specific_pid = matches!(
+                dev.product,
+                crate::types::PID_ELITE2_BT_CLASSIC
+                    | crate::types::PID_ELITE2_BLE
+                    | crate::types::PID_ELITE2_USB
+            );
+            // 0x028E over BT could be any Xbox controller — we accept it
+            // since the daemon will detect Elite 2 from the report format.
+            // TODO: distinguish Elite 2 from regular Xbox controllers.
+            let is_bt_spoofed = dev.product == crate::types::PID_XBOX360_SPOOFED;
+            let name_lower = dev.name.to_lowercase();
+            let is_our_device = !name_lower.contains("xbelite2");
+
+            if is_ms && (is_specific_pid || is_bt_spoofed) && is_our_device {
+                log::debug!("Found Elite 2 hidraw: {} ({})", dev.name, path.display());
                 devices.push(dev);
             }
         }

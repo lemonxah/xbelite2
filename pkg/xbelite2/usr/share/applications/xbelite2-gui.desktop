@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Xbox Elite 2 Configurator
+Comment=Configure Xbox Elite Series 2 controller profiles
+Exec=xbelite2-gui
+Icon=input-gaming
+Terminal=false
+Type=Application
+Categories=Settings;HardwareSettings;

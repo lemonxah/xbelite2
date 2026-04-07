@@ -1,30 +1,18 @@
-//! Core data types for the Xbox Elite 2 driver.
-
 use serde::{Deserialize, Serialize};
 
-/// Microsoft vendor ID
 pub const VENDOR_MICROSOFT: u16 = 0x045E;
-/// Elite 2 Bluetooth Classic (firmware 4.x)
 pub const PID_ELITE2_BT_CLASSIC: u16 = 0x0B05;
-/// Elite 2 BLE (firmware 5.x+)
 pub const PID_ELITE2_BLE: u16 = 0x0B22;
-/// Elite 2 USB
 pub const PID_ELITE2_USB: u16 = 0x0B00;
-/// Xbox 360 spoofed PID (used by BT HID layer and xpadneo)
 pub const PID_XBOX360_SPOOFED: u16 = 0x028E;
 
-/// Maximum number of profiles
 pub const MAX_PROFILES: usize = 8;
-/// Maximum remap entries per profile
 pub const MAX_REMAPS: usize = 32;
-/// Number of points in a piecewise-linear curve
 pub const CURVE_POINTS: usize = 16;
 
-/// Linux input event types
 pub const EV_KEY: u16 = 0x01;
 pub const EV_ABS: u16 = 0x03;
 
-/// Standard gamepad button codes
 pub const BTN_A: u16 = 0x130;
 pub const BTN_B: u16 = 0x131;
 pub const BTN_X: u16 = 0x133;
@@ -37,45 +25,35 @@ pub const BTN_MODE: u16 = 0x13C; // Xbox button
 pub const BTN_THUMBL: u16 = 0x13D; // Left stick click
 pub const BTN_THUMBR: u16 = 0x13E; // Right stick click
 
-/// Paddle button codes (kernel 6.17+ standard)
 pub const BTN_GRIPL: u16 = 0x224;
 pub const BTN_GRIPR: u16 = 0x225;
 pub const BTN_GRIPL2: u16 = 0x226;
 pub const BTN_GRIPR2: u16 = 0x227;
 
-/// Fallback paddle codes for older kernels (trigger happy)
 pub const BTN_TRIGGER_HAPPY5: u16 = 0x2C4;
 pub const BTN_TRIGGER_HAPPY6: u16 = 0x2C5;
 pub const BTN_TRIGGER_HAPPY7: u16 = 0x2C6;
 pub const BTN_TRIGGER_HAPPY8: u16 = 0x2C7;
 
-/// D-pad as hat axis values
 pub const ABS_HAT0X: u16 = 0x10;
 pub const ABS_HAT0Y: u16 = 0x11;
 
-/// Axis codes
-pub const ABS_X: u16 = 0x00; // Left stick X
-pub const ABS_Y: u16 = 0x01; // Left stick Y
-pub const ABS_Z: u16 = 0x02; // Left trigger
-pub const ABS_RX: u16 = 0x03; // Right stick X
-pub const ABS_RY: u16 = 0x04; // Right stick Y
-pub const ABS_RZ: u16 = 0x05; // Right trigger
+pub const ABS_X: u16 = 0x00;
+pub const ABS_Y: u16 = 0x01;
+pub const ABS_Z: u16 = 0x02;
+pub const ABS_RX: u16 = 0x03;
+pub const ABS_RY: u16 = 0x04;
+pub const ABS_RZ: u16 = 0x05;
 
-/// Firmware report format variant
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReportFormat {
-    /// Firmware 4.x: BT Classic, specific byte offsets
     V4,
-    /// Firmware 5.0-5.10: BLE, different offsets
     V5Early,
-    /// Firmware 5.11+: BLE, paddles in extended report
     V5Late,
 }
 
-/// Raw parsed gamepad state from a single HID report
 #[derive(Debug, Clone, Default)]
 pub struct GamepadState {
-    // Buttons (true = pressed)
     pub btn_a: bool,
     pub btn_b: bool,
     pub btn_x: bool,
@@ -88,31 +66,26 @@ pub struct GamepadState {
     pub btn_lstick: bool,
     pub btn_rstick: bool,
 
-    // D-pad
     pub dpad_up: bool,
     pub dpad_down: bool,
     pub dpad_left: bool,
     pub dpad_right: bool,
 
-    // Paddles
-    pub paddle_ur: bool, // Upper right (P1)
-    pub paddle_lr: bool, // Lower right (P2)
-    pub paddle_ul: bool, // Upper left (P3)
-    pub paddle_ll: bool, // Lower left (P4)
+    pub paddle_ur: bool,
+    pub paddle_lr: bool,
+    pub paddle_ul: bool,
+    pub paddle_ll: bool,
 
-    // Axes (raw values)
     pub left_stick_x: i16,
     pub left_stick_y: i16,
     pub right_stick_x: i16,
     pub right_stick_y: i16,
-    pub left_trigger: u16,  // 0-1023
-    pub right_trigger: u16, // 0-1023
+    pub left_trigger: u16,
+    pub right_trigger: u16,
 
-    // Profile reported by controller hardware (0-3)
     pub hw_profile: u8,
 }
 
-/// A single input event (button press or axis movement)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct InputId {
     pub ev_type: u16,
@@ -134,7 +107,6 @@ impl InputId {
     }
 }
 
-/// A remap rule: source input -> destination input
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemapEntry {
     pub src: InputId,
@@ -143,9 +115,6 @@ pub struct RemapEntry {
     pub scale: f32,
 }
 
-/// Piecewise-linear response curve for stick axes.
-/// Points are evenly spaced across input range [0, 32767].
-/// Applied to abs(value), sign is preserved.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StickCurve {
     pub points: [i16; CURVE_POINTS],
@@ -153,7 +122,6 @@ pub struct StickCurve {
 
 impl Default for StickCurve {
     fn default() -> Self {
-        // Linear identity curve
         let mut points = [0i16; CURVE_POINTS];
         for i in 0..CURVE_POINTS {
             points[i] = ((i as i32 * 32767) / (CURVE_POINTS as i32 - 1)) as i16;
@@ -163,7 +131,6 @@ impl Default for StickCurve {
 }
 
 impl StickCurve {
-    /// Evaluate the curve for a raw stick value.
     pub fn evaluate(&self, raw: i16) -> i16 {
         if raw == 0 {
             return 0;
@@ -188,11 +155,10 @@ impl StickCurve {
     }
 }
 
-/// Trigger dead zone configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TriggerZone {
-    pub dead_min: u16, // Below this -> 0
-    pub dead_max: u16, // Above this -> 1023
+    pub dead_min: u16,
+    pub dead_max: u16,
 }
 
 impl Default for TriggerZone {
@@ -205,7 +171,6 @@ impl Default for TriggerZone {
 }
 
 impl TriggerZone {
-    /// Apply dead zone to a raw trigger value (0-1023).
     pub fn apply(&self, raw: u16) -> u16 {
         if raw <= self.dead_min {
             return 0;
@@ -221,7 +186,6 @@ impl TriggerZone {
     }
 }
 
-/// Per-motor vibration intensity (0-100).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VibrationConfig {
     pub main_motor: u8,
@@ -241,13 +205,14 @@ impl Default for VibrationConfig {
     }
 }
 
-/// A complete profile configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
     pub name: String,
     pub remaps: Vec<RemapEntry>,
-    pub stick_curves: [Option<StickCurve>; 4], // LX, LY, RX, RY
-    pub trigger_zones: [Option<TriggerZone>; 2], // Left, Right
+    pub stick_curves: [Option<StickCurve>; 4],
+    pub trigger_zones: [Option<TriggerZone>; 2],
+    #[serde(default)]
+    pub stick_deadzones: [u16; 2],
     pub vibration: VibrationConfig,
 }
 
@@ -258,27 +223,28 @@ impl Default for Profile {
             remaps: Vec::new(),
             stick_curves: [None, None, None, None],
             trigger_zones: [None, None],
+            stick_deadzones: [0, 0],
             vibration: VibrationConfig::default(),
         }
     }
 }
 
-/// Configuration mapping hardware profiles to software profiles.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceConfig {
-    /// Profiles indexed by slot number
     pub profiles: Vec<Profile>,
-    /// Map hardware profile (0-3) to software profile index
     pub hw_profile_map: [usize; 4],
-    /// Currently active software profile (overrides hw_profile_map if set)
     pub active_override: Option<usize>,
 }
 
 impl Default for DeviceConfig {
     fn default() -> Self {
         Self {
-            profiles: vec![Profile::default()],
-            hw_profile_map: [0, 0, 0, 0],
+            profiles: vec![
+                Profile { name: String::from("Profile 1"), ..Default::default() },
+                Profile { name: String::from("Profile 2"), ..Default::default() },
+                Profile { name: String::from("Profile 3"), ..Default::default() },
+            ],
+            hw_profile_map: [0, 0, 1, 2],
             active_override: None,
         }
     }

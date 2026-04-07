@@ -82,7 +82,7 @@ pub fn discover_devices() -> Result<Vec<EvdevDevice>> {
 
         match probe_evdev(&path) {
             Ok(Some(dev)) => {
-                log::info!("Found Elite 2: {} at {}", dev.name, path.display());
+                log::debug!("Found Elite 2 evdev: {} at {}", dev.name, path.display());
                 devices.push(dev);
             }
             Ok(None) => {} // Not an Elite 2
@@ -95,7 +95,7 @@ pub fn discover_devices() -> Result<Vec<EvdevDevice>> {
     Ok(devices)
 }
 
-/// Check if an evdev device is an Xbox Elite Series 2.
+/// Check if an evdev device is an Xbox Elite Series 2 **gamepad** (not sub-devices).
 fn probe_evdev(path: &Path) -> Result<Option<EvdevDevice>> {
     let file = OpenOptions::new()
         .read(true)
@@ -107,43 +107,56 @@ fn probe_evdev(path: &Path) -> Result<Option<EvdevDevice>> {
     let mut id = InputId::default();
     unsafe { eviocgid(fd, &mut id).context("EVIOCGID")? };
 
-    // Check for Microsoft vendor
+    // Must be Microsoft vendor
     if id.vendor != 0x045E {
         return Ok(None);
     }
 
-    // Check for known Elite 2 product IDs
-    // 0x0B00 = USB, 0x0B05 = BT Classic, 0x0B22 = BLE
-    // Also match 0x028E (spoofed by xpadneo to Xbox 360 PID)
-    // 0x0B00 = USB, 0x0B05 = BT Classic, 0x0B22 = BLE, 0x028E = xpadneo spoofed
-    let is_elite2 = matches!(id.product, 0x0B00 | 0x0B05 | 0x0B22 | 0x028E);
-
-    if !is_elite2 {
-        // Check by name - xpad names it "Microsoft X-Box One Elite 2 pad"
-        let mut name_buf = [0u8; 256];
-        if let Ok(len) = unsafe { eviocgname(fd, &mut name_buf) } {
-            let name = String::from_utf8_lossy(&name_buf[..(len as usize).min(255)])
-                .trim_end_matches('\0')
-                .to_string();
-            if !name.to_lowercase().contains("elite") {
-                return Ok(None);
-            }
-            return Ok(Some(EvdevDevice {
-                path: path.to_path_buf(),
-                name,
-                id,
-            }));
-        }
-        return Ok(None);
-    }
-
+    // Get the device name
     let mut name_buf = [0u8; 256];
     let name = match unsafe { eviocgname(fd, &mut name_buf) } {
         Ok(len) => String::from_utf8_lossy(&name_buf[..(len as usize).min(255)])
             .trim_end_matches('\0')
             .to_string(),
-        Err(_) => String::from("Xbox Elite Series 2"),
+        Err(_) => return Ok(None),
     };
+
+    let name_lower = name.to_lowercase();
+
+    // Skip sub-devices: Mouse, Keyboard, Consumer Control
+    if name_lower.contains("mouse")
+        || name_lower.contains("keyboard")
+        || name_lower.contains("consumer")
+    {
+        return Ok(None);
+    }
+
+    // Skip our own virtual gamepad
+    if name_lower.contains("xbelite2") {
+        return Ok(None);
+    }
+
+    // Match by PID: 0x0B00 (USB), 0x0B05 (BT Classic), 0x0B22 (BLE)
+    // For 0x028E (spoofed BT PID), also require "elite" in name to avoid
+    // matching regular Xbox controllers
+    let is_elite2 = matches!(id.product, 0x0B00 | 0x0B05 | 0x0B22)
+        || (id.product == 0x028E && name_lower.contains("elite"));
+
+    // Also match by name if PID didn't match (xpad names it "Elite 2 pad")
+    if !is_elite2 && !name_lower.contains("elite") {
+        return Ok(None);
+    }
+
+    // Verify it's actually a gamepad by checking for ABS_X capability
+    let mut abs_bits = [0u8; 8];
+    if unsafe { eviocgbit_abs(fd, &mut abs_bits).is_ok() } {
+        // ABS_X = bit 0 in byte 0
+        if abs_bits[0] & 0x01 == 0 {
+            return Ok(None); // No ABS_X = not a gamepad
+        }
+    } else {
+        return Ok(None);
+    }
 
     Ok(Some(EvdevDevice {
         path: path.to_path_buf(),
