@@ -1,0 +1,13 @@
+[package]
+name = "xbe2-rw"
+version = "0.1.0"
+edition = "2021"
+description = "CLI tool for reading/writing Xbox Elite Series 2 controller config"
+license = "GPL-2.0-only"
+
+[[bin]]
+name = "xbe2-rw"
+path = "src/main.rs"
+
+[dependencies]
+xbelite2-gip = { path = "../gip" }

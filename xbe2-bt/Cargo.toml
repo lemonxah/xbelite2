@@ -1,0 +1,13 @@
+[package]
+name = "xbe2-bt"
+version = "0.1.0"
+edition = "2021"
+description = "CLI tool for testing Xbox Elite Series 2 controller over Bluetooth"
+license = "GPL-2.0-only"
+
+[[bin]]
+name = "xbe2-bt"
+path = "src/main.rs"
+
+[dependencies]
+xbelite2-gip = { path = "../gip" }

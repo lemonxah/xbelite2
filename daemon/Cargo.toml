@@ -1,0 +1,30 @@
+[package]
+name = "xbelite2"
+version = "0.4.2"
+edition = "2021"
+description = "Xbox Elite Series 2 controller driver and profile manager for Linux"
+license = "GPL-2.0-only"
+
+[lib]
+name = "xbelite2"
+path = "src/lib.rs"
+
+[[bin]]
+name = "xbelite2d"
+path = "src/main.rs"
+
+[[bin]]
+name = "xbe2-dump"
+path = "src/bin/xbe2-dump.rs"
+
+[dependencies]
+xbelite2-gip = { path = "../gip" }
+nix = { version = "0.31", features = ["ioctl", "fs", "poll"] }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1"
+ctrlc = "3"
+rusb = "0.9"

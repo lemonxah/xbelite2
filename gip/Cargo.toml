@@ -1,0 +1,11 @@
+[package]
+name = "xbelite2-gip"
+version = "0.1.0"
+edition = "2021"
+description = "GIP protocol library for Xbox Elite Series 2 controllers"
+license = "GPL-2.0-only"
+
+[dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

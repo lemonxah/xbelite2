@@ -1,0 +1,310 @@
+# Xbox Elite Series 2 — GIP Protocol Reference
+
+Reverse-engineered from USB packet captures (firmware 5.17).
+All multi-byte values are little-endian unless noted.
+
+## USB Transport
+
+- Vendor: `0x045E` (Microsoft), Product: `0x0B00`
+- Interface 0, Protocol `0xD0` (GIP)
+- EP 0x02 OUT (Interrupt, 64 bytes max, 4ms interval) — host to controller
+- EP 0x82 IN (Interrupt) — controller to host
+
+### GIP Frame Header (4 bytes)
+
+```
+[0] command
+[1] flags
+[2] sequence number
+[3] payload length
+```
+
+Common flags:
+- `0x00` — no flags
+- `0x10` — vendor command (used with 0x4D)
+- `0x20` — needs-ack / system command
+- `0x30` — system + needs-ack (used with 0x1E)
+
+### Write Quirk
+
+`usb_interrupt_msg()` fails for packets > ~7 bytes on Linux.
+Use async URB submission (`usb_fill_int_urb` + `usb_submit_urb` + completion callback) instead.
+This matches how the xpad driver handles similar endpoints.
+
+---
+
+## Commands
+
+### 0x01 — ACK
+
+Sent by controller to acknowledge a command.
+
+```
+01 20 <seq> 09 00 <cmd> 00 <payload_len> 00 00 00 00 00
+```
+
+### 0x02 — HELLO
+
+Sent by controller on connect. The host replies with power-on and init.
+
+### 0x03 — STATUS
+
+Controller reports status periodically.
+
+```
+03 20 <seq> 04 <status bytes...>
+```
+
+### 0x05 — POWER
+
+```
+05 20 <seq> 01 05
+```
+
+Sent by host after connect and before disconnect. Payload `05` = power on.
+
+### 0x07 — GUIDE BUTTON
+
+```
+07 20 <seq> 01 <pressed>
+```
+
+`pressed`: `0x01` = down, `0x00` = up. Sent as a separate command, not part of the input report.
+
+### 0x09 — RUMBLE
+
+```
+09 00 <seq> 09 00 0f <LMotor> <RMotor> <LTrigger> <RTrigger> ff 00 eb
+```
+
+4 motors, each 0–100:
+- `LTrigger` — left trigger impulse motor
+- `RTrigger` — right trigger impulse motor
+- `LMotor` — left body rumble (big motor)
+- `RMotor` — right body rumble (small motor)
+
+The trailing `ff 00 eb` appears constant.
+
+### 0x0E — LED COLOR (live preview)
+
+```
+0e 00 <seq> 05 <mode> 00 <R> <G> <B>
+```
+
+- `mode=0` — set color
+- `mode=1, RGB=000000` — turn off / return to profile color
+
+Not saved to the controller. Used by Xbox Accessories for the color picker animation.
+Requires an UNLOCK (0x4D sub 0x03) to have been sent first.
+
+### 0x0C — ELITE INPUT REPORT
+
+Compact input report, 17-byte payload:
+
+```
+[0-1]   buttons (same layout as 0x20 input)
+[2-3]   left trigger (u16 LE, 10-bit)
+[4-5]   right trigger (u16 LE, 10-bit)
+[6-7]   left stick X (i16 LE)
+[8-9]   left stick Y (i16 LE)
+[10-11] right stick X (i16 LE)
+[12-13] right stick Y (i16 LE)
+[14]    paddles bitmask (bit0=UR, bit1=LR, bit2=UL, bit3=LL)
+[15]    unknown
+[16]    trigger mode (constant 0x0a)
+```
+
+Sent alongside 0x20 input reports after extended mode is enabled.
+
+### 0x1E — SYSTEM
+
+Used for calibration and device info reads.
+
+Sub-commands (payload byte 0):
+- `0x02` — version info
+- `0x03` — profile button press notification (controller to host, unsolicited)
+- `0x05` — device name (read, via 0x1E)
+- `0x0F` — stick calibration data
+
+### 0x20 — INPUT REPORT
+
+Standard input report. After extended mode init (0x4D sub 0x07), this becomes a 47-byte payload (51 total):
+
+```
+[0]     buttons byte 1: Menu(bit2) View(bit3) A(bit4) B(bit5) X(bit6) Y(bit7)
+[1]     buttons byte 2: DUp(bit0) DDown(bit1) DLeft(bit2) DRight(bit3) LB(bit4) RB(bit5) LS(bit6) RS(bit7)
+[2-3]   left trigger (u16 LE, 0–1023)
+[4-5]   right trigger (u16 LE, 0–1023)
+[6-7]   left stick X (i16 LE)
+[8-9]   left stick Y (i16 LE)
+[10-11] right stick X (i16 LE)
+[12-13] right stick Y (i16 LE)
+[14]    paddles bitmask (bit0=UR, bit1=LR, bit2=UL, bit3=LL)
+[15-34] reserved (zeros)
+[35-46] timestamps
+```
+
+Note: byte offsets above are relative to the payload (after the 4-byte GIP header).
+
+---
+
+## 0x4D — VENDOR COMMANDS
+
+The main command for profile configuration. All profile reads/writes go through 0x4D.
+
+### Sub 0x03 — UNLOCK
+
+Must be sent before any writes (profile, LED, name). Can be sent multiple times.
+
+```
+OUT: 4d 10 <seq> 01 03
+IN:  4d 00 <seq> 02 03 00
+```
+
+### Sub 0x04 — WRITE DEVICE NAME
+
+```
+OUT: 4d 10 <seq> 21 04 <UTF-16LE name, 32 bytes, zero-padded>
+IN:  4d 00 <seq> 02 04 00
+```
+
+Max 15 characters. Name is stored on the controller.
+
+### Sub 0x05 — READ DEVICE NAME
+
+```
+OUT: 4d 10 <seq> 01 05
+IN:  4d 00 <seq> 22 05 00 <UTF-16LE name, 32 bytes>
+```
+
+### Sub 0x07 — INIT EXTENDED REPORTS
+
+Enables extended input reports (paddles, profile data in 0x20, and 0x0C reports).
+
+```
+OUT: 4d 10 <seq> 02 07 00
+IN:  4d 00 <seq> 02 07 00
+```
+
+Must be sent during init. Without this, controller sends standard 18-byte input reports only.
+
+### Sub 0x02 — READ PROFILE PAGE
+
+```
+OUT: 4d 10 <seq> 03 02 <page> <size>
+IN:  4d <flags> <seq> <len> 02 00 <page> <size> <data...>
+```
+
+### Sub 0x01 — WRITE PROFILE PAGE
+
+```
+OUT: 4d 10 <seq> <3+size> 01 <page> <size> <data...>
+IN:  4d 00 <seq> 03 01 00 <page>
+```
+
+Requires UNLOCK (sub 0x03) first. Xbox Accessories always writes all 4 pages (both slots, mapping + curves) when saving a profile.
+
+---
+
+## Profile Pages
+
+Each profile has 4 pages across 2 slots:
+
+| Profile | SlotA Mapping | SlotA Curves | SlotB Mapping | SlotB Curves |
+|---------|--------------|-------------|--------------|-------------|
+| 1       | 0x20         | 0x21        | 0x26         | 0x27        |
+| 2       | 0x22         | 0x23        | 0x28         | 0x29        |
+| 3       | 0x24         | 0x25        | 0x2A         | 0x2B        |
+
+SlotA = normal mode. SlotB = shift/alternate mapping (activated by holding a shift button).
+
+### Mapping Page (56 bytes)
+
+```
+[0]     flags: 0x11 = default, 0x10 = customized
+[1-4]   face button remap: [A, B, X, Y] slots
+[5-8]   face button remap (shift): [A, B, X, Y] slots
+[9-16]  extended remap: [LB, RB, LT, RT, DUp, DDown, DLeft, DRight]
+[17-27] reserved (zeros)
+[28-31] dead zones: [LStick, RStick, LTrigger, RTrigger]
+[32-44] trigger and stick range config
+[45]    color flag: 0xFF = default (white), 0x00 = custom
+[46]    color R
+[47]    color G
+[48]    color B
+[49]    vibration left (0–100, stored value; 0x30 = 48 = default)
+[50]    vibration right (0–100)
+[51-55] reserved (zeros)
+```
+
+#### Button Remap Codes
+
+| Code | Button |
+|------|--------|
+| 0x04 | A |
+| 0x05 | B |
+| 0x06 | X |
+| 0x07 | Y |
+| 0x08 | LB |
+| 0x09 | RB |
+| 0x0A | LT |
+| 0x0B | RT |
+| 0x0C | D-pad Up |
+| 0x0D | D-pad Down |
+| 0x0E | D-pad Left |
+| 0x0F | D-pad Right |
+
+Default mapping: each slot maps to itself (A=0x04, B=0x05, etc).
+
+### Curves Page (43 bytes)
+
+```
+[0]    flags (same as mapping page)
+[1-6]  left stick X curve (3 control points)
+[7-12] left stick Y curve
+[13-18] right stick X curve
+[19-24] right stick Y curve
+[25-42] reserved (zeros)
+```
+
+Each curve is 6 bytes: 3 control points as `[x1, y1, x2, y2, x3, y3]`.
+Default linear curve: `[2B, 2B, 7F, 7F, BF, BF]` — points at (43,43), (127,127), (191,191).
+
+---
+
+## Init Sequence
+
+On USB connect, the controller sends a HELLO (0x02). The host should respond with:
+
+1. Power on: `05 20 <seq> 01 00`
+2. Init extended reports: `4D 10 <seq> 02 07 00`
+
+After this the controller sends extended 0x20 (51-byte) and 0x0C (21-byte) input reports.
+
+## Write Sequence
+
+Before any profile, LED, or name writes:
+
+1. Send UNLOCK: `4D 10 <seq> 01 03` (can send 1–3 times)
+2. Perform writes
+3. Optionally read back to verify
+
+---
+
+## BT HID Input Report (report ID 0x01, 20 bytes)
+
+```
+[0]    report ID (0x01)
+[1]    buttons 0: A(bit0) B(bit1) X(bit3) Y(bit4) LB(bit6) RB(bit7)
+[2]    buttons 1: hat(bits0-3) View(bit2) Menu(bit3) LS(bit5) RS(bit6)
+[3-4]  left trigger (u16 LE, masked 0x03FF)
+[5-6]  right trigger (u16 LE, masked 0x03FF)
+[7-8]  left stick X (i16 LE)
+[9-10] left stick Y (i16 LE)
+[11-12] right stick X (i16 LE)
+[13-14] right stick Y (i16 LE)
+[15-16] unknown
+[17]   profile (bits 0-1)
+[18]   trigger mode (0x0a)
+[19]   paddles bitmask (bit0=UR, bit1=LR, bit2=UL, bit3=LL)
+```
