@@ -349,15 +349,23 @@ fn process_ff_events(ctrl: &mut ControllerState) {
 
     // Process all pending events from the uinput fd
     while let Some((ev_type, code, value)) = ctrl.gamepad.read_event() {
+        log::debug!("uinput event: type=0x{ev_type:04x} code={code} value={value}");
         match ev_type {
             EV_UINPUT => {
                 match code {
-                    UI_FF_UPLOAD => { let _ = ctrl.gamepad.handle_ff_upload(); }
-                    UI_FF_ERASE => { let _ = ctrl.gamepad.handle_ff_erase(); }
+                    UI_FF_UPLOAD => {
+                        log::info!("FF upload request");
+                        let _ = ctrl.gamepad.handle_ff_upload();
+                    }
+                    UI_FF_ERASE => {
+                        log::info!("FF erase request");
+                        let _ = ctrl.gamepad.handle_ff_erase();
+                    }
                     _ => {}
                 }
             }
             EV_FF => {
+                log::info!("FF play: code={code} value={value}");
                 // value > 0 means play, value == 0 means stop
                 let rumble = if value > 0 {
                     // Default ping rumble: moderate intensity on all motors
@@ -365,7 +373,10 @@ fn process_ff_events(ctrl: &mut ControllerState) {
                 } else {
                     [0x03u8, 0x0F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
                 };
-                let _ = send_raw_report(ctrl, &rumble);
+                match send_raw_report(ctrl, &rumble) {
+                    Ok(_) => log::info!("Rumble sent"),
+                    Err(e) => log::error!("Rumble failed: {e}"),
+                }
             }
             _ => {}
         }
@@ -436,13 +447,13 @@ fn parse_hidraw_report(data: &[u8]) -> GamepadState {
 
     // Buttons: bytes 14-15, 15 bits (HID Usage 1-15, some unused)
     // Decoded from BLE HID report descriptor (PID 0x0B22):
-    //   Bit 0:  A          Bit 8:  View/Back
-    //   Bit 1:  B          Bit 9:  Menu/Start
-    //   Bit 2:  (unused)   Bit 10: L Stick click
-    //   Bit 3:  X          Bit 11: R Stick click
-    //   Bit 4:  Y          Bit 12: (unused)
-    //   Bit 5:  (unused)   Bit 13: (unused)
-    //   Bit 6:  LB         Bit 14: Xbox/Guide
+    //   Bit 0:  A          Bit 8:  (unused)
+    //   Bit 1:  B          Bit 9:  (unused)
+    //   Bit 2:  (unused)   Bit 10: View/Back
+    //   Bit 3:  X          Bit 11: Menu/Start
+    //   Bit 4:  Y          Bit 12: Xbox/Guide
+    //   Bit 5:  (unused)   Bit 13: L Stick click
+    //   Bit 6:  LB         Bit 14: R Stick click
     //   Bit 7:  RB         Bit 15: (padding)
     let btns = u16::from_le_bytes([data[14], data[15]]);
     state.btn_a      = btns & (1 << 0) != 0;
@@ -451,11 +462,11 @@ fn parse_hidraw_report(data: &[u8]) -> GamepadState {
     state.btn_y      = btns & (1 << 4) != 0;
     state.btn_lb     = btns & (1 << 6) != 0;
     state.btn_rb     = btns & (1 << 7) != 0;
-    state.btn_view   = btns & (1 << 8) != 0;
-    state.btn_menu   = btns & (1 << 9) != 0;
-    state.btn_lstick = btns & (1 << 10) != 0;
-    state.btn_rstick = btns & (1 << 11) != 0;
-    state.btn_xbox   = btns & (1 << 14) != 0;
+    state.btn_view   = btns & (1 << 10) != 0;
+    state.btn_menu   = btns & (1 << 11) != 0;
+    state.btn_xbox   = btns & (1 << 12) != 0;
+    state.btn_lstick = btns & (1 << 13) != 0;
+    state.btn_rstick = btns & (1 << 14) != 0;
 
     // Profile: byte 17
     if data.len() > 17 {

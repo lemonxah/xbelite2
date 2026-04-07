@@ -99,12 +99,20 @@ static ssize_t bt_misc_write(struct file *f, const char __user *buf,
 {
 	unsigned char kbuf[64];
 	struct hid_device *hdev;
+	int ret;
 	if (!g_bt.active) return -ENODEV;
 	hdev = g_bt.hdev;
 	if (!hdev) return -ENODEV;
-	if (cnt > sizeof(kbuf)) return -EINVAL;
+	if (cnt < 1 || cnt > sizeof(kbuf)) return -EINVAL;
 	if (copy_from_user(kbuf, buf, cnt)) return -EFAULT;
-	if (hid_hw_output_report(hdev, kbuf, cnt) < 0)
+
+	/* Try output_report first (works for USB-style transports),
+	   fall back to raw_request SET_REPORT for Bluetooth HID. */
+	ret = hid_hw_output_report(hdev, kbuf, cnt);
+	if (ret < 0)
+		ret = hid_hw_raw_request(hdev, kbuf[0], kbuf, cnt,
+					 HID_OUTPUT_REPORT, HID_REQ_SET_REPORT);
+	if (ret < 0)
 		return -EIO;
 	return cnt;
 }
