@@ -1,0 +1,17 @@
+# Xbox Elite Series 2 Controller - xbelite2 userspace driver
+#
+# Grant hidraw access for BT connections
+KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b05", MODE="0660", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b22", MODE="0660", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="028e", SUBSYSTEM=="hidraw", MODE="0660", TAG+="uaccess"
+
+# USB: unbind xpad and rebind to usbhid so we get a hidraw device
+# This gives us raw HID access with paddles + profile in all modes
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="0b00", \
+    RUN+="/bin/sh -c 'echo $kernel > /sys/bus/usb/drivers/xpad/unbind 2>/dev/null; echo $kernel > /sys/bus/usb/drivers/usbhid/bind 2>/dev/null'"
+
+# Grant hidraw access for USB (after rebind to usbhid)
+KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b00", MODE="0660", TAG+="uaccess"
+
+# uinput access for virtual gamepad creation
+KERNEL=="uinput", MODE="0660", GROUP="input"

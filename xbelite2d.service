@@ -1,0 +1,25 @@
+[Unit]
+Description=Xbox Elite Series 2 Controller Driver
+After=bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/xbelite2d
+Restart=on-failure
+RestartSec=3
+
+# Security hardening
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+NoNewPrivileges=false
+# Need access to /dev/hidraw*, /dev/uinput, /dev/input/event*
+DeviceAllow=/dev/hidraw* rw
+DeviceAllow=/dev/uinput rw
+DeviceAllow=/dev/input/event* rw
+# Need access to sysfs for device discovery
+ReadOnlyPaths=/sys
+
+[Install]
+WantedBy=multi-user.target
