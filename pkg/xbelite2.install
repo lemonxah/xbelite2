@@ -1,7 +1,7 @@
 post_install() {
-    dkms add xbelite2-dkms/0.3.2
-    dkms build xbelite2-dkms/0.3.2
-    dkms install xbelite2-dkms/0.3.2
+    dkms add xbelite2-dkms/0.3.3
+    dkms build xbelite2-dkms/0.3.3
+    dkms install xbelite2-dkms/0.3.3
 }
 
 pre_upgrade() {
@@ -13,5 +13,5 @@ post_upgrade() {
 }
 
 pre_remove() {
-    dkms remove xbelite2-dkms/0.3.2 --all
+    dkms remove xbelite2-dkms/0.3.3 --all
 }

@@ -21,6 +21,7 @@ bump new_version:
 # Bump, commit, tag, and push
 release new_version: (bump new_version)
     git add Cargo.toml Cargo.lock kmod/dkms.conf pkg/PKGBUILD pkg/xbelite2.install xbelite2.install
-    git commit -m "v{{new_version}}"
+    git commit -am "v{{new_version}}"
     git tag -a "v{{new_version}}" -m "v{{new_version}}"
     git push && git push --tags
+    gh release create "v{{new_version}}" --generate-notes
