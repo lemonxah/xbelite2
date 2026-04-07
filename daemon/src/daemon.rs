@@ -15,6 +15,7 @@ use xbelite2::hidraw;
 use xbelite2::transform;
 use xbelite2::types::*;
 use xbelite2::uinput::VirtualGamepad;
+use xbelite2_gip::hw_profile::{self, HwProfileCache};
 
 enum InputSource {
     Hidraw {
@@ -38,6 +39,7 @@ struct ControllerState {
     config: DeviceConfig,
     prev_state: GamepadState,
     device_id: String,
+    hw_cache: HwProfileCache,
 }
 
 impl ControllerState {
@@ -87,6 +89,18 @@ pub fn run(running: Arc<AtomicBool>) -> Result<()> {
             }
         }
 
+        // Also poll uinput fds for FF events (play/stop/upload/erase)
+        let ff_fd_start = pollfds.len();
+        for id in &device_ids {
+            if let Some(ctrl) = controllers.get(id) {
+                pollfds.push(libc::pollfd {
+                    fd: ctrl.gamepad.fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                });
+            }
+        }
+
         let _ipc_fd_idx = pollfds.len();
         pollfds.push(libc::pollfd {
             fd: listener.as_raw_fd(),
@@ -123,8 +137,13 @@ pub fn run(running: Arc<AtomicBool>) -> Result<()> {
         }
 
         // Handle force-feedback events from uinput (Steam ping, rumble, etc.)
-        for ctrl in controllers.values_mut() {
-            process_ff_events(ctrl);
+        for (i, id) in device_ids.iter().enumerate() {
+            let ff_idx = ff_fd_start + i;
+            if ff_idx < pollfds.len() && pollfds[ff_idx].revents & libc::POLLIN != 0 {
+                if let Some(ctrl) = controllers.get_mut(id) {
+                    process_ff_events(ctrl);
+                }
+            }
         }
 
         handle_ipc(&listener, &mut controllers);
@@ -220,12 +239,15 @@ fn setup_hidraw_controller(device: hidraw::HidrawDevice, idx: usize) -> Result<C
     let gamepad = VirtualGamepad::new(idx)?;
     let config = DeviceConfig::default();
 
+    let hw_cache = load_hw_cache();
+
     Ok(ControllerState {
         source: InputSource::Hidraw { file, _grab: grab },
         gamepad,
         config,
         prev_state: GamepadState::default(),
         device_id,
+        hw_cache,
     })
 }
 
@@ -241,12 +263,15 @@ fn setup_misc_controller(path: &std::path::Path, idx: usize) -> Result<Controlle
     let gamepad = VirtualGamepad::new(idx)?;
     let config = DeviceConfig::default();
 
+    let hw_cache = load_hw_cache();
+
     Ok(ControllerState {
         source: InputSource::MiscDev { file },
         gamepad,
         config,
         prev_state: GamepadState::default(),
         device_id,
+        hw_cache,
     })
 }
 
@@ -259,6 +284,25 @@ fn setup_usb_misc_controller(path: &std::path::Path, idx: usize) -> Result<Contr
         .open(path)
         .with_context(|| format!("open {}", path.display()))?;
 
+    // Read hardware profiles from controller and cache them
+    let hw_cache = match xbelite2_gip::transport::GipDevice::open_usb() {
+        Ok(mut gip) => {
+            gip.unlock();
+            let cache = hw_profile::read_from_controller(&mut gip);
+            let cache_dir = std::path::PathBuf::from("/var/cache/xbelite2");
+            if let Err(e) = hw_profile::save_to(&cache, &cache_dir) {
+                log::warn!("Failed to save hw profile cache: {e}");
+            } else {
+                log::info!("Cached {} hardware profiles", cache.profiles.len());
+            }
+            cache
+        }
+        Err(e) => {
+            log::warn!("Could not read hw profiles via GIP: {e}");
+            HwProfileCache::default()
+        }
+    };
+
     let gamepad = VirtualGamepad::new(idx)?;
     let config = DeviceConfig::default();
 
@@ -268,6 +312,7 @@ fn setup_usb_misc_controller(path: &std::path::Path, idx: usize) -> Result<Contr
         config,
         prev_state: GamepadState::default(),
         device_id,
+        hw_cache,
     })
 }
 
@@ -279,13 +324,48 @@ fn setup_evdev_controller(device: evdev::EvdevDevice, idx: usize) -> Result<Cont
     let gamepad = VirtualGamepad::new(idx + 10)?;
     let config = DeviceConfig::default();
 
+    let hw_cache = load_hw_cache();
+
     Ok(ControllerState {
         source: InputSource::Evdev { reader },
         gamepad,
         config,
         prev_state: GamepadState::default(),
         device_id,
+        hw_cache,
     })
+}
+
+fn load_hw_cache() -> HwProfileCache {
+    let cache_dir = std::path::PathBuf::from("/var/cache/xbelite2");
+    hw_profile::load_from(&cache_dir).unwrap_or_else(|| {
+        log::info!("No hardware profile cache found, using defaults");
+        HwProfileCache::default()
+    })
+}
+
+/// Suppress paddle events that are hardware-remapped on the controller.
+/// When a paddle is remapped in the hardware profile, the controller already
+/// sends the remapped button — emitting the paddle event too would be a duplicate.
+fn suppress_hw_remapped_paddles(state: &mut GamepadState, hw_cache: &HwProfileCache) {
+    let profile_idx = state.hw_profile.saturating_sub(1) as usize;
+    if state.hw_profile == 0 || profile_idx >= 3 {
+        return; // Profile 0 = default, no hardware remaps
+    }
+    let hw = &hw_cache.profiles[profile_idx];
+    if !hw.has_any_remap() {
+        return;
+    }
+    // Paddles are part of the extended remap region on the controller.
+    // If any face or ext button is remapped, paddles that trigger those
+    // remapped actions are handled by the controller hardware.
+    // We suppress the raw paddle state to avoid duplicates.
+    // Note: we always suppress paddles when the profile has any remaps,
+    // because the controller firmware handles paddle->button mapping internally.
+    state.paddle_ur = false;
+    state.paddle_lr = false;
+    state.paddle_ul = false;
+    state.paddle_ll = false;
 }
 
 fn process_events(ctrl: &mut ControllerState) -> Result<()> {
@@ -300,7 +380,8 @@ fn process_events(ctrl: &mut ControllerState) -> Result<()> {
             if buf[0] != 0x01 || n < 15 {
                 return Ok(());
             }
-            let current = parse_hidraw_report(&buf[..n]);
+            let mut current = parse_hidraw_report(&buf[..n]);
+            suppress_hw_remapped_paddles(&mut current, &ctrl.hw_cache);
 
             if current.hw_profile == 0 {
                 let identity = Profile::default();
@@ -333,7 +414,8 @@ fn process_events(ctrl: &mut ControllerState) -> Result<()> {
             if buf[0] != 0x01 || frame_len < 15 {
                 return Ok(());
             }
-            let current = parse_hidraw_report(&buf[..frame_len]);
+            let mut current = parse_hidraw_report(&buf[..frame_len]);
+            suppress_hw_remapped_paddles(&mut current, &ctrl.hw_cache);
 
             if current.hw_profile == 0 {
                 let identity = Profile::default();
@@ -806,6 +888,7 @@ fn handle_ipc_request(
                         hw_profile: s.hw_profile,
                         active_profile: ctrl.config.active_override.unwrap_or(0),
                         connected: true,
+                        is_usb: matches!(&ctrl.source, InputSource::UsbMiscDev { .. }),
                         buttons,
                         paddles,
                         left_stick_x: s.left_stick_x,

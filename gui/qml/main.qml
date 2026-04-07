@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Dialogs
 import com.xbelite2.gui
 
 ApplicationWindow {
@@ -29,6 +30,40 @@ ApplicationWindow {
 
     Component.onCompleted: pollTimer.start()
 
+    ColorDialog {
+        id: colorDialog
+        title: "Profile LED Color"
+        onAccepted: {
+            profileModel.set_profile_color_hex(selectedColor.toString())
+        }
+    }
+
+    Dialog {
+        id: nameDialog
+        title: "Device Name"
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        anchors.centerIn: parent
+        modal: true
+
+        ColumnLayout {
+            spacing: 10
+            Label {
+                text: "Enter new device name (max 15 characters):"
+                color: "#e0e0e0"
+            }
+            TextField {
+                id: nameField
+                text: profileModel.device_name
+                maximumLength: 15
+                Layout.preferredWidth: 300
+                color: "#e0e0e0"
+                background: Rectangle { color: "#333"; radius: 4 }
+            }
+        }
+
+        onAccepted: profileModel.set_device_name_text(nameField.text)
+    }
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 0
@@ -37,7 +72,7 @@ ApplicationWindow {
         // Header bar
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 50
+            Layout.preferredHeight: 60
             color: "#111111"
 
             RowLayout {
@@ -47,17 +82,50 @@ ApplicationWindow {
 
                 ColumnLayout {
                     spacing: 2
-                    Label {
-                        text: profileModel.device_name
-                        font.pixelSize: 15
-                        font.bold: true
-                        color: "#e0e0e0"
+
+                    RowLayout {
+                        spacing: 8
+                        Label {
+                            text: profileModel.device_name
+                            font.pixelSize: 15
+                            font.bold: true
+                            color: "#e0e0e0"
+                        }
+                        Label {
+                            text: profileModel.is_usb ? "[USB]" : "[BT]"
+                            font.pixelSize: 11
+                            font.bold: true
+                            color: profileModel.is_usb ? "#0078d4" : "#9b59b6"
+                        }
+                        Button {
+                            text: "Rename"
+                            visible: profileModel.is_usb
+                            implicitWidth: 60
+                            implicitHeight: 22
+                            font.pixelSize: 10
+                            onClicked: {
+                                nameField.text = profileModel.device_name
+                                nameDialog.open()
+                            }
+                            background: Rectangle {
+                                color: parent.hovered ? "#444" : "#333"
+                                radius: 3
+                            }
+                            contentItem: Text {
+                                text: parent.text; color: "#aaa"
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                                font.pixelSize: 10
+                            }
+                        }
                     }
+
                     Label {
                         text: {
                             if (!profileModel.connected) return "Disconnected"
-                            if (profileModel.hw_profile === 0) return "Connected — Default (Passthrough)"
-                            return "Connected — Profile " + profileModel.hw_profile + " (Editable)"
+                            if (profileModel.hw_profile === 0) return "Profile Default (Passthrough)"
+                            var mode = profileModel.is_usb ? "Hardware Editable" : "Read Only"
+                            return "Profile " + profileModel.hw_profile + " (" + mode + ")"
                         }
                         font.pixelSize: 11
                         color: profileModel.connected ? "#107c10" : "#e74c3c"
@@ -65,6 +133,39 @@ ApplicationWindow {
                 }
 
                 Item { Layout.fillWidth: true }
+
+                // Profile color indicator + picker
+                RowLayout {
+                    spacing: 8
+                    visible: profileModel.hw_profile > 0
+
+                    Rectangle {
+                        width: 24; height: 24; radius: 12
+                        color: profileModel.profile_color === "default" ? "white" : profileModel.profile_color
+                        border.color: "#666"
+                        border.width: 1
+
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: profileModel.is_usb
+                            cursorShape: profileModel.is_usb ? Qt.PointingHandCursor : Qt.ArrowCursor
+                            onClicked: {
+                                if (profileModel.profile_color !== "default") {
+                                    colorDialog.selectedColor = profileModel.profile_color
+                                }
+                                colorDialog.open()
+                            }
+                        }
+                    }
+
+                    Label {
+                        text: profileModel.profile_color === "default" ? "Default" : profileModel.profile_color
+                        font.pixelSize: 10
+                        color: "#888"
+                    }
+                }
+
+                Item { width: 12 }
 
                 // HW Profile indicator
                 Row {
@@ -137,6 +238,21 @@ ApplicationWindow {
                         font.pixelSize: 13
                     }
                 }
+            }
+        }
+
+        // BT mode banner
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: visible ? 30 : 0
+            visible: profileModel.connected && !profileModel.is_usb && profileModel.hw_profile > 0
+            color: "#2c1a3d"
+
+            Label {
+                anchors.centerIn: parent
+                text: "Bluetooth mode - hardware profile editing requires USB connection"
+                font.pixelSize: 11
+                color: "#9b59b6"
             }
         }
 

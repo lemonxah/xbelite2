@@ -42,7 +42,7 @@ pub struct FfRumble {
     pub weak_magnitude: u16,
 }
 
-/// Matches kernel's struct ff_effect (simplified for rumble)
+/// Matches kernel's struct ff_effect (48 bytes on 64-bit)
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct FfEffect {
@@ -53,8 +53,8 @@ pub struct FfEffect {
     pub trigger_interval: u16,
     pub replay_length: u16,
     pub replay_delay: u16,
-    // Union: we only care about rumble
-    pub u: [u8; 52], // padded union (largest variant)
+    // Union: 48 - 14 (header) = 34 bytes
+    pub u: [u8; 34],
 }
 
 impl Default for FfEffect {

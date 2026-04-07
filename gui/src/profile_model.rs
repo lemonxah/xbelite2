@@ -30,6 +30,9 @@ pub mod qobject {
         #[qproperty(QString, right_stick_y_curve)]
         #[qproperty(i32, left_stick_deadzone)]
         #[qproperty(i32, right_stick_deadzone)]
+        // Connection mode
+        #[qproperty(bool, is_usb)]
+        #[qproperty(QString, profile_color)] // "#rrggbb" or "default"
         // Live input state from controller
         #[qproperty(i32, live_buttons)]
         #[qproperty(i32, live_paddles)]
@@ -91,6 +94,15 @@ pub mod qobject {
 
         #[qinvokable]
         fn test_all_vibration(self: Pin<&mut ProfileModel>);
+
+        #[qinvokable]
+        fn set_device_name_text(self: Pin<&mut ProfileModel>, name: QString);
+
+        #[qinvokable]
+        fn set_profile_color_hex(self: Pin<&mut ProfileModel>, hex: QString);
+
+        #[qinvokable]
+        fn read_hw_profile_color(self: Pin<&mut ProfileModel>);
     }
 }
 
@@ -200,6 +212,8 @@ struct DevSt {
     active_profile: usize,
     connected: bool,
     #[serde(default)]
+    is_usb: bool,
+    #[serde(default)]
     buttons: u16,
     #[serde(default)]
     paddles: u8,
@@ -238,6 +252,8 @@ pub struct ProfileModelRust {
     right_stick_y_curve: QString,
     left_stick_deadzone: i32,
     right_stick_deadzone: i32,
+    is_usb: bool,
+    profile_color: QString,
     live_buttons: i32,
     live_paddles: i32,
     live_lx: i32,
@@ -277,6 +293,8 @@ impl Default for ProfileModelRust {
             right_stick_y_curve: QString::default(),
             left_stick_deadzone: 0,
             right_stick_deadzone: 0,
+            is_usb: false,
+            profile_color: QString::from("default"),
             live_buttons: 0,
             live_paddles: 0,
             live_lx: 0,
@@ -310,6 +328,7 @@ impl qobject::ProfileModel {
                     self.as_mut().set_device_name(QString::from(&dev.name));
                     self.as_mut().set_hw_profile(hw);
                     self.as_mut().set_connected(dev.connected);
+                    self.as_mut().set_is_usb(dev.is_usb);
                     let did = dev.device_id.clone();
                     self.as_mut().rust_mut().device_id = did.clone();
                     let _ = ipc(&sp, &Req::SetConfig { device_id: did, config });
@@ -459,6 +478,64 @@ impl qobject::ProfileModel {
         }
     }
 
+    fn set_device_name_text(mut self: Pin<&mut Self>, name: QString) {
+        if !self.rust().is_usb { return; }
+        let name_str = name.to_string();
+        // Write via GIP (runs in-process, needs USB)
+        if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
+            gip.unlock();
+            if let Some(readback) = xbelite2_gip::name::write(&mut gip, &name_str) {
+                self.as_mut().set_device_name(QString::from(&readback));
+            }
+        }
+    }
+
+    fn set_profile_color_hex(mut self: Pin<&mut Self>, hex: QString) {
+        if !self.rust().is_usb { return; }
+        let hex_str = hex.to_string();
+        let clean: String = hex_str.trim_start_matches('#').chars().filter(|c| c.is_ascii_hexdigit()).collect();
+        if clean.len() != 6 { return; }
+        let r = u8::from_str_radix(&clean[0..2], 16).unwrap_or(0);
+        let g = u8::from_str_radix(&clean[2..4], 16).unwrap_or(0);
+        let b = u8::from_str_radix(&clean[4..6], 16).unwrap_or(0);
+
+        let hw = self.rust().hw_profile;
+        if hw < 1 || hw > 3 { return; }
+        let profile_idx = (hw - 1) as usize;
+
+        if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
+            gip.unlock();
+            xbelite2_gip::profile::set_color(&mut gip, profile_idx, r, g, b);
+            xbelite2_gip::led::set_color(&mut gip, r, g, b);
+        }
+        self.as_mut().set_profile_color(QString::from(&format!("#{:02x}{:02x}{:02x}", r, g, b)));
+    }
+
+    fn read_hw_profile_color(mut self: Pin<&mut Self>) {
+        if !self.rust().is_usb {
+            self.as_mut().set_profile_color(QString::from("default"));
+            return;
+        }
+        let hw = self.rust().hw_profile;
+        if hw < 1 || hw > 3 {
+            self.as_mut().set_profile_color(QString::from("default"));
+            return;
+        }
+        let profile_idx = (hw - 1) as usize;
+        if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
+            if let Some(mapping) = xbelite2_gip::profile::read_mapping(&mut gip, profile_idx, 0) {
+                match mapping.color {
+                    Some((r, g, b)) => {
+                        self.as_mut().set_profile_color(QString::from(&format!("#{:02x}{:02x}{:02x}", r, g, b)));
+                    }
+                    None => {
+                        self.as_mut().set_profile_color(QString::from("default"));
+                    }
+                }
+            }
+        }
+    }
+
     fn load_profile(mut self: Pin<&mut Self>, idx: usize) {
         let p = match self.rust().config.profiles.get(idx) {
             Some(p) => p.clone(),
@@ -527,6 +604,7 @@ impl qobject::ProfileModel {
             let new_hw = dev.hw_profile as i32;
             self.as_mut().set_hw_profile(new_hw);
             self.as_mut().set_connected(dev.connected);
+            self.as_mut().set_is_usb(dev.is_usb);
             self.as_mut().set_device_name(QString::from(&dev.name));
 
             if old_hw != new_hw && new_hw >= 1 && new_hw <= 3 {
@@ -534,6 +612,7 @@ impl qobject::ProfileModel {
                 self.as_mut().rust_mut().sel_idx = sw_idx;
                 self.as_mut().set_active_profile(new_hw);
                 self.as_mut().load_profile(sw_idx);
+                self.as_mut().read_hw_profile_color();
             }
 
             self.as_mut().set_live_buttons(dev.buttons as i32);

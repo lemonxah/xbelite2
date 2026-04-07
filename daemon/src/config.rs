@@ -121,6 +121,7 @@ pub struct DeviceStatus {
     pub hw_profile: u8,
     pub active_profile: usize,
     pub connected: bool,
+    pub is_usb: bool,
     // Live input state
     pub buttons: u16,      // Bitmask of pressed buttons
     pub paddles: u8,       // Bitmask of pressed paddles
