@@ -237,22 +237,52 @@ static ssize_t misc_read(struct file *f, char __user *buf, size_t cnt, loff_t *p
 	return copied;
 }
 
+static void misc_write_cb(struct urb *urb)
+{
+	complete((struct completion *)urb->context);
+}
+
 static ssize_t misc_write(struct file *f, const char __user *buf,
 			  size_t cnt, loff_t *p)
 {
 	struct xbelite2_usb *d = g_usb;
-	unsigned char kbuf[64];
-	int actual;
+	struct urb *urb;
+	unsigned char *kbuf;
+	DECLARE_COMPLETION_ONSTACK(done);
+	int ret;
+
 	if (!d || !d->udev) return -ENODEV;
-	if (cnt > sizeof(kbuf)) return -EINVAL;
-	if (copy_from_user(kbuf, buf, cnt)) return -EFAULT;
-	{
-		int ret = usb_bulk_msg(d->udev, usb_sndbulkpipe(d->udev, 0x02),
-				       kbuf, cnt, &actual, 2000);
-		if (ret && actual <= 0)
-			return -EIO;
+	if (cnt > 64 || cnt == 0) return -EINVAL;
+
+	kbuf = kmalloc(cnt, GFP_KERNEL);
+	if (!kbuf) return -ENOMEM;
+	if (copy_from_user(kbuf, buf, cnt)) { kfree(kbuf); return -EFAULT; }
+
+	urb = usb_alloc_urb(0, GFP_KERNEL);
+	if (!urb) { kfree(kbuf); return -ENOMEM; }
+
+	usb_fill_int_urb(urb, d->udev,
+			 usb_sndintpipe(d->udev, 0x02),
+			 kbuf, cnt, misc_write_cb, &done, 4);
+
+	ret = usb_submit_urb(urb, GFP_KERNEL);
+	if (ret) {
+		usb_free_urb(urb);
+		kfree(kbuf);
+		return -EIO;
 	}
-	return cnt;
+
+	if (!wait_for_completion_timeout(&done, msecs_to_jiffies(2000))) {
+		usb_kill_urb(urb);
+		usb_free_urb(urb);
+		kfree(kbuf);
+		return -ETIMEDOUT;
+	}
+
+	ret = urb->status;
+	usb_free_urb(urb);
+	kfree(kbuf);
+	return ret ? ret : cnt;
 }
 
 static __poll_t misc_poll(struct file *f, struct poll_table_struct *w)
@@ -277,10 +307,10 @@ static void usb_init_work(struct work_struct *work)
 	int a;
 
 	if (!d->running) return;
-	usb_bulk_msg(d->udev, usb_sndbulkpipe(d->udev, 0x02),
-		     (void *)pwr, sizeof(pwr), &a, 1000);
-	usb_bulk_msg(d->udev, usb_sndbulkpipe(d->udev, 0x02),
-		     (void *)init, sizeof(init), &a, 1000);
+	usb_interrupt_msg(d->udev, usb_sndintpipe(d->udev, 0x02),
+			  (void *)pwr, sizeof(pwr), &a, 1000);
+	usb_interrupt_msg(d->udev, usb_sndintpipe(d->udev, 0x02),
+			  (void *)init, sizeof(init), &a, 1000);
 }
 
 // ---- USB GIP IRQ ----
