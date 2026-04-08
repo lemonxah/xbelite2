@@ -5,23 +5,28 @@ import QtQuick.Layouts
 Item {
     required property var profileModel
     readonly property bool isPassthrough: profileModel.hw_profile === 0
+    readonly property bool canEdit: profileModel.is_usb && !isPassthrough
 
-    readonly property var buttonCodes: ({
-        "A": 0x130, "B": 0x131, "X": 0x133, "Y": 0x134,
-        "LB": 0x136, "RB": 0x137,
-        "View": 0x13A, "Menu": 0x13B, "Xbox": 0x13C,
-        "L Stick": 0x13D, "R Stick": 0x13E,
-        "D Up": 0x220, "D Down": 0x221, "D Left": 0x222, "D Right": 0x223,
-        "P1": 0x225, "P2": 0x227, "P3": 0x224, "P4": 0x226
+    // GIP button codes (hardware-level)
+    readonly property var gipCodes: ({
+        "A": 0x04, "B": 0x05, "X": 0x06, "Y": 0x07,
+        "LB": 0x08, "RB": 0x09, "LT": 0x0A, "RT": 0x0B,
+        "DUp": 0x0C, "DDown": 0x0D, "DLeft": 0x0E, "DRight": 0x0F
     })
 
+    readonly property var gipNames: [
+        "A", "B", "X", "Y", "LB", "RB", "LT", "RT",
+        "DUp", "DDown", "DLeft", "DRight"
+    ]
+
     readonly property var allButtonNames: [
-        "A", "B", "X", "Y", "LB", "RB", "View", "Menu", "Xbox",
-        "L Stick", "R Stick", "D Up", "D Down", "D Left", "D Right",
+        "A", "B", "X", "Y", "LB", "RB",
+        "View", "Menu", "Xbox",
+        "L Stick", "R Stick",
+        "DUp", "DDown", "DLeft", "DRight",
         "P1", "P2", "P3", "P4"
     ]
 
-    // Bitmask: 0-10=buttons, 11=DUp, 12=DDown, 13=DLeft, 14=DRight
     function isBtnPressed(name) {
         var b = profileModel.live_buttons
         var p = profileModel.live_paddles
@@ -37,10 +42,10 @@ Item {
             case "Xbox": return (b & (1<<8)) !== 0
             case "L Stick": return (b & (1<<9)) !== 0
             case "R Stick": return (b & (1<<10)) !== 0
-            case "D Up": return (b & (1<<11)) !== 0
-            case "D Down": return (b & (1<<12)) !== 0
-            case "D Left": return (b & (1<<13)) !== 0
-            case "D Right": return (b & (1<<14)) !== 0
+            case "DUp": return (b & (1<<11)) !== 0
+            case "DDown": return (b & (1<<12)) !== 0
+            case "DLeft": return (b & (1<<13)) !== 0
+            case "DRight": return (b & (1<<14)) !== 0
             case "P1": return (p & 0x01) !== 0
             case "P2": return (p & 0x02) !== 0
             case "P3": return (p & 0x04) !== 0
@@ -49,27 +54,14 @@ Item {
         return false
     }
 
-    function getRemapFor(btnName) {
-        try {
-            var remaps = JSON.parse(profileModel.get_remaps_json())
-            var code = buttonCodes[btnName]
-            for (var i = 0; i < remaps.length; i++) {
-                if (remaps[i].src.code === code) {
-                    for (var name in buttonCodes) {
-                        if (buttonCodes[name] === remaps[i].dst.code) return name
-                    }
-                }
-            }
-        } catch(e) {}
-        return ""
-    }
-
     property string selectedButton: ""
+    property bool shiftMode: false
 
     // Layout: left labels | controller image | right labels
     RowLayout {
         anchors.fill: parent
         anchors.margins: 5
+        anchors.bottomMargin: (selectedButton !== "" && canEdit) ? 60 : 5
         spacing: 0
 
         // Left side labels
@@ -84,19 +76,20 @@ Item {
             }
 
             Repeater {
-                model: ["LB", "View", "L Stick", "D Up", "D Down", "D Left", "D Right", "P3", "P4"]
+                model: ["LB", "View", "L Stick", "DUp", "DDown", "DLeft", "DRight", "P3", "P4"]
                 SideBtn {
-                    label: modelData; remap: isPassthrough ? "" : getRemapFor(modelData)
-                    sel: !isPassthrough && selectedButton === modelData
+                    label: modelData
+                    sel: canEdit && selectedButton === modelData
                     pressed: isBtnPressed(modelData)
                     accent: (modelData === "P3" || modelData === "P4") ? "#e67e22" : "#ccc"
-                    onClicked: if (!isPassthrough) selectedButton = modelData
-                    clickable: !isPassthrough
+                    onClicked: if (canEdit) selectedButton = modelData
+                    clickable: canEdit
+                    remappable: modelData in gipCodes
                 }
             }
         }
 
-        // Center: controller image with connection lines
+        // Center: controller image
         Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -111,7 +104,6 @@ Item {
                 smooth: true
                 opacity: 0.9
             }
-
         }
 
         // Right side labels
@@ -128,8 +120,8 @@ Item {
             Repeater {
                 model: ["RB", "Menu", "Xbox", "Y", "B", "A", "X", "R Stick", "P1", "P2"]
                 SideBtn {
-                    label: modelData; remap: isPassthrough ? "" : getRemapFor(modelData)
-                    sel: !isPassthrough && selectedButton === modelData
+                    label: modelData
+                    sel: canEdit && selectedButton === modelData
                     pressed: isBtnPressed(modelData)
                     accent: {
                         switch(modelData) {
@@ -142,8 +134,9 @@ Item {
                             default: return "#ccc"
                         }
                     }
-                    onClicked: if (!isPassthrough) selectedButton = modelData
-                    clickable: !isPassthrough
+                    onClicked: if (canEdit) selectedButton = modelData
+                    clickable: canEdit
+                    remappable: modelData in gipCodes
                 }
             }
         }
@@ -152,33 +145,62 @@ Item {
     // Remap bar at bottom
     Rectangle {
         anchors.bottom: parent.bottom; anchors.left: parent.left; anchors.right: parent.right
-        height: (selectedButton !== "" && !isPassthrough) ? 50 : 0; color: "#111"; visible: selectedButton !== "" && !isPassthrough; z: 10
+        height: (selectedButton !== "" && canEdit && selectedButton in gipCodes) ? 55 : 0
+        color: "#111"; visible: height > 0; z: 10
 
         RowLayout {
             anchors.fill: parent; anchors.margins: 8; spacing: 12
 
-            Label { text: "Remap <b>" + selectedButton + "</b> →"; color: "#e0e0e0"; font.pixelSize: 13; textFormat: Text.RichText }
+            Label {
+                text: "Remap <b>" + selectedButton + "</b> →"
+                color: "#e0e0e0"; font.pixelSize: 13; textFormat: Text.RichText
+            }
 
-            ComboBox {
-                id: remapTarget; Layout.preferredWidth: 160
-                model: ["(None)"].concat(allButtonNames)
-                background: Rectangle { color: "#222"; radius: 4; border.color: "#444" }
-                contentItem: Text { text: remapTarget.displayText; color: "#e0e0e0"; leftPadding: 8; verticalAlignment: Text.AlignVCenter }
+            // Normal mode remap
+            ColumnLayout {
+                spacing: 2
+                Label { text: "Normal"; color: "#888"; font.pixelSize: 9 }
+                ComboBox {
+                    id: normalTarget; Layout.preferredWidth: 120
+                    model: ["(Default)"].concat(gipNames)
+                    background: Rectangle { color: "#222"; radius: 4; border.color: "#444" }
+                    contentItem: Text {
+                        text: normalTarget.displayText; color: "#e0e0e0"
+                        leftPadding: 8; verticalAlignment: Text.AlignVCenter; font.pixelSize: 12
+                    }
+                }
+            }
+
+            // Shift mode remap
+            ColumnLayout {
+                spacing: 2
+                Label { text: "Shift"; color: "#9b59b6"; font.pixelSize: 9 }
+                ComboBox {
+                    id: shiftTarget; Layout.preferredWidth: 120
+                    model: ["(Default)"].concat(gipNames)
+                    background: Rectangle { color: "#1a1028"; radius: 4; border.color: "#6c3483" }
+                    contentItem: Text {
+                        text: shiftTarget.displayText; color: "#d2b4de"
+                        leftPadding: 8; verticalAlignment: Text.AlignVCenter; font.pixelSize: 12
+                    }
+                }
             }
 
             Button {
                 text: "Apply"
                 onClicked: {
-                    if (remapTarget.currentIndex === 0) profileModel.remove_remap(buttonCodes[selectedButton])
-                    else profileModel.set_remap(buttonCodes[selectedButton], buttonCodes[allButtonNames[remapTarget.currentIndex - 1]])
+                    var src = selectedButton
+                    var normalBtn = normalTarget.currentIndex === 0 ? src : gipNames[normalTarget.currentIndex - 1]
+                    var shiftBtn = shiftTarget.currentIndex === 0 ? src : gipNames[shiftTarget.currentIndex - 1]
+                    profileModel.set_hw_remap(src, normalBtn, shiftBtn)
                 }
                 background: Rectangle { color: parent.hovered ? "#1a8c1a" : "#107c10"; radius: 4 }
                 contentItem: Text { text: parent.text; color: "white"; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
             }
 
             Button {
-                text: "Clear"
-                onClicked: profileModel.remove_remap(buttonCodes[selectedButton])
+                text: "Reset"
+                onClicked: profileModel.set_hw_remap(selectedButton, selectedButton, selectedButton)
                 background: Rectangle { color: parent.hovered ? "#e74c3c" : "#333"; radius: 4 }
                 contentItem: Text { text: parent.text; color: "#ccc"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
             }
@@ -187,35 +209,46 @@ Item {
         }
     }
 
-    // Side button component
-    // Passthrough overlay
+    // Overlay messages
     Rectangle {
         anchors.centerIn: parent
-        width: 300; height: 40; radius: 8
-        color: "#222"
-        border.color: "#555"
-        visible: isPassthrough
-        z: 20
+        width: 320; height: 40; radius: 8
+        color: "#222"; border.color: "#555"
+        visible: isPassthrough; z: 20
 
         Label {
             anchors.centerIn: parent
-            text: "Profile 0 — Passthrough (no remapping)"
+            text: "Profile 0 - Passthrough (no remapping)"
             color: "#888"; font.pixelSize: 13
         }
     }
 
+    Rectangle {
+        anchors.centerIn: parent
+        width: 360; height: 40; radius: 8
+        color: "#1a1028"; border.color: "#6c3483"
+        visible: !isPassthrough && !profileModel.is_usb; z: 20
+
+        Label {
+            anchors.centerIn: parent
+            text: "Connect via USB to edit hardware remaps"
+            color: "#9b59b6"; font.pixelSize: 13
+        }
+    }
+
+    // Side button component
     component SideBtn: Rectangle {
         property string label: ""
-        property string remap: ""
         property bool sel: false
         property bool pressed: false
         property bool clickable: true
+        property bool remappable: true
         property color accent: "#ccc"
         signal clicked()
 
         width: 105; height: 32; radius: 4
         color: pressed ? accent : (sel ? "#533483" : (ma.containsMouse && clickable ? "#222" : "#111"))
-        border.color: pressed ? accent : (sel ? "#7b4fbf" : (remap !== "" ? "#0078d4" : "#333"))
+        border.color: pressed ? accent : (sel ? "#7b4fbf" : "#333")
         border.width: (sel || pressed) ? 2 : 1
         opacity: clickable ? 1.0 : 0.6
 
@@ -226,26 +259,29 @@ Item {
                 color: parent.parent.pressed ? "#000" : parent.parent.accent
                 font.pixelSize: 11; font.bold: true
             }
-            Label {
-                text: parent.parent.remap !== "" ? "→" + parent.parent.remap : ""
-                color: parent.parent.pressed ? "#000" : "#4da6ff"
-                font.pixelSize: 9
-                visible: parent.parent.remap !== ""
+            // Show a small indicator if button is remappable (GIP) vs display-only
+            Rectangle {
+                width: 4; height: 4; radius: 2
+                color: "#0078d4"
+                visible: parent.parent.remappable && parent.parent.clickable
+                anchors.verticalCenter: parent.verticalCenter
             }
         }
 
-        MouseArea { id: ma; anchors.fill: parent; hoverEnabled: true; cursorShape: clickable ? Qt.PointingHandCursor : Qt.ArrowCursor; onClicked: if (clickable) parent.clicked() }
+        MouseArea {
+            id: ma; anchors.fill: parent; hoverEnabled: true
+            cursorShape: clickable ? Qt.PointingHandCursor : Qt.ArrowCursor
+            onClicked: if (clickable) parent.clicked()
+        }
     }
 
-    // Trigger bar component - shows fill level
+    // Trigger bar component
     component TriggerBar: Rectangle {
         property string label: ""
-        property real fillLevel: 0.0  // 0.0 to 1.0
+        property real fillLevel: 0.0
 
         width: 105; height: 32; radius: 4
-        color: "#111"
-        border.color: "#333"
-        clip: true
+        color: "#111"; border.color: "#333"; clip: true
 
         Rectangle {
             anchors.left: parent.left
@@ -260,8 +296,7 @@ Item {
         Label {
             anchors.centerIn: parent
             text: label + " " + Math.round(fillLevel * 100) + "%"
-            color: "#e0e0e0"
-            font.pixelSize: 10; font.bold: true
+            color: "#e0e0e0"; font.pixelSize: 10; font.bold: true
         }
     }
 }

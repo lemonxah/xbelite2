@@ -46,15 +46,16 @@ pub struct FfRumble {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct FfEffect {
-    pub effect_type: u16,
-    pub id: i16,
-    pub direction: u16,
-    pub trigger_button: u16,
-    pub trigger_interval: u16,
-    pub replay_length: u16,
-    pub replay_delay: u16,
-    // Union: 48 - 14 (header) = 34 bytes
-    pub u: [u8; 34],
+    pub effect_type: u16,  // offset 0
+    pub id: i16,           // offset 2
+    pub direction: u16,    // offset 4
+    pub trigger_button: u16,   // offset 6
+    pub trigger_interval: u16, // offset 8
+    pub replay_length: u16,    // offset 10
+    pub replay_delay: u16,     // offset 12
+    _pad: u16,                 // offset 14 (alignment padding)
+    // Union at offset 16, size 32
+    pub u: [u8; 32],
 }
 
 impl Default for FfEffect {
@@ -96,9 +97,12 @@ struct UinputFfErase {
 
 // _IOWR('U', 200, struct uinput_ff_upload)
 nix::ioctl_readwrite!(ui_begin_ff_upload, UINPUT_IOCTL_BASE, UI_BEGIN_FF_UPLOAD, UinputFfUpload);
-nix::ioctl_readwrite!(ui_end_ff_upload, UINPUT_IOCTL_BASE, UI_END_FF_UPLOAD, UinputFfUpload);
+// _IOW('U', 201, struct uinput_ff_upload)
+nix::ioctl_write_ptr!(ui_end_ff_upload, UINPUT_IOCTL_BASE, UI_END_FF_UPLOAD, UinputFfUpload);
+// _IOWR('U', 202, struct uinput_ff_erase)
 nix::ioctl_readwrite!(ui_begin_ff_erase, UINPUT_IOCTL_BASE, UI_BEGIN_FF_ERASE, UinputFfErase);
-nix::ioctl_readwrite!(ui_end_ff_erase, UINPUT_IOCTL_BASE, UI_END_FF_ERASE, UinputFfErase);
+// _IOW('U', 203, struct uinput_ff_erase)
+nix::ioctl_write_ptr!(ui_end_ff_erase, UINPUT_IOCTL_BASE, UI_END_FF_ERASE, UinputFfErase);
 
 /// Matches the kernel's struct input_event layout
 #[repr(C)]
@@ -267,14 +271,25 @@ impl VirtualGamepad {
         let mut upload = UinputFfUpload::default();
         match unsafe { ui_begin_ff_upload(fd, &mut upload) } {
             Ok(_) => {
+                let req_id = upload.request_id;
                 let id = upload.effect.id;
+                let rumble = upload.effect.rumble();
+                log::info!("FF upload: req_id={req_id} id={id} type=0x{:04x} strong={} weak={} retval={}",
+                    upload.effect.effect_type, rumble.strong_magnitude, rumble.weak_magnitude, upload.retval);
                 if id >= 0 && (id as usize) < self.effects.len() {
                     self.effects[id as usize] = Some(upload.effect);
                 }
                 upload.retval = 0;
-                unsafe { ui_end_ff_upload(fd, &mut upload).context("end ff upload")? };
+                log::info!("FF end upload: req_id={} retval={} effect_id={} effect_type=0x{:04x}",
+                    upload.request_id, upload.retval, upload.effect.id, upload.effect.effect_type);
+                match unsafe { ui_end_ff_upload(fd, &mut upload) } {
+                    Ok(_) => log::info!("FF upload accepted: id={id}"),
+                    Err(e) => log::error!("FF upload end failed: {e} (req_id={req_id})"),
+                }
             }
-            Err(_) => {}
+            Err(e) => {
+                log::warn!("FF upload begin failed: {e}");
+            }
         }
         Ok(())
     }

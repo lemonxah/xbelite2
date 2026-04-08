@@ -103,6 +103,11 @@ pub mod qobject {
 
         #[qinvokable]
         fn read_hw_profile_color(self: Pin<&mut ProfileModel>);
+
+        /// Remap a GIP button for both normal and shift mode on the current hw profile.
+        /// Button names: A, B, X, Y, LB, RB, LT, RT, DUp, DDown, DLeft, DRight
+        #[qinvokable]
+        fn set_hw_remap(self: Pin<&mut ProfileModel>, src: QString, normal_dst: QString, shift_dst: QString);
     }
 }
 
@@ -533,6 +538,34 @@ impl qobject::ProfileModel {
                     }
                 }
             }
+        }
+    }
+
+    fn set_hw_remap(self: Pin<&mut Self>, src: QString, normal_dst: QString, shift_dst: QString) {
+        if !self.rust().is_usb { return; }
+        let hw = self.rust().hw_profile;
+        if hw < 1 || hw > 3 { return; }
+        let profile_idx = (hw - 1) as usize;
+
+        let src_btn = match xbelite2_gip::types::GipButton::from_name(&src.to_string()) {
+            Some(b) => b,
+            None => return,
+        };
+        let normal_btn = match xbelite2_gip::types::GipButton::from_name(&normal_dst.to_string()) {
+            Some(b) => b,
+            None => return,
+        };
+        let shift_btn = match xbelite2_gip::types::GipButton::from_name(&shift_dst.to_string()) {
+            Some(b) => b,
+            None => return,
+        };
+
+        if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
+            gip.unlock();
+            // Write normal mode remap (SlotA)
+            xbelite2_gip::profile::remap_buttons(&mut gip, profile_idx, &[(src_btn, normal_btn)]);
+            // Write shift mode remap (SlotB)
+            xbelite2_gip::profile::remap_shift(&mut gip, profile_idx, &[(src_btn, shift_btn)]);
         }
     }
 

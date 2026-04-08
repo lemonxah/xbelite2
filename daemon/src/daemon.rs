@@ -515,7 +515,7 @@ fn process_ff_events(ctrl: &mut ControllerState) {
 
     // Process all pending events from the uinput fd
     while let Some((ev_type, code, value)) = ctrl.gamepad.read_event() {
-        log::debug!("uinput event: type=0x{ev_type:04x} code={code} value={value}");
+        log::info!("uinput event: type=0x{ev_type:04x} code={code} value={value}");
         match ev_type {
             EV_UINPUT => {
                 match code {
