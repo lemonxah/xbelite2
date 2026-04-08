@@ -114,6 +114,10 @@ pub mod qobject {
         #[qinvokable]
         fn set_shift_button(self: Pin<&mut ProfileModel>, btn: QString);
 
+        /// Remap a paddle. paddle: 0=P1, 1=P2, 2=P3, 3=P4. target: button name.
+        #[qinvokable]
+        fn set_paddle_remap(self: Pin<&mut ProfileModel>, paddle: i32, target: QString);
+
         #[qinvokable]
         fn set_profile_brightness_value(self: Pin<&mut ProfileModel>, brightness: i32);
 
@@ -222,6 +226,7 @@ enum Req {
     SetDeviceName { device_id: String, name: String },
     SetHwRemap { device_id: String, src: String, normal_dst: String, shift_dst: String },
     SetProfileBrightness { device_id: String, brightness: u8 },
+    SetPaddleRemap { device_id: String, paddle: u8, target: String },
     SetStickInversion { device_id: String, inversion_mask: u8 },
     PersistHwChanges { device_id: String },
 }
@@ -585,30 +590,39 @@ impl qobject::ProfileModel {
         let default_face: [u8; 4] = [0x04, 0x05, 0x06, 0x07];
         let default_ext: [u8; 8] = [0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F];
         let face_labels = ["A", "B", "X", "Y"];
-        let ext_labels = ["LB", "RB", "LT", "RT", "DUp", "DDown", "DLeft", "DRight"];
+        let ext_labels = ["DUp", "DDown", "DLeft", "DRight", "LB", "RB", "L Stick", "R Stick"];
+        let paddle_labels = ["P1", "P2", "P3", "P4"];
 
         let mut normal_map = serde_json::Map::new();
         let mut shift_map = serde_json::Map::new();
+        let mut paddle_map = serde_json::Map::new();
 
-        // Normal mode (remap_a from SlotA — stored in cache)
-        for (i, &code) in profile.remap_a.iter().enumerate() {
+        // Face buttons (bytes 5-8)
+        for (i, &code) in profile.face.iter().enumerate() {
             if code != default_face[i] {
                 normal_map.insert(face_labels[i].into(), serde_json::Value::String(btn_name(code).into()));
             }
         }
-        for (i, &code) in profile.remap_ext.iter().enumerate() {
+        // Extended (bytes 9-16)
+        for (i, &code) in profile.ext.iter().enumerate() {
             if code != default_ext[i] {
                 normal_map.insert(ext_labels[i].into(), serde_json::Value::String(btn_name(code).into()));
             }
         }
+        // Paddles (bytes 1-4)
+        for (i, &code) in profile.paddles.iter().enumerate() {
+            if code != default_face[i] {
+                paddle_map.insert(paddle_labels[i].into(), serde_json::Value::String(btn_name(code).into()));
+            }
+        }
 
         // Shift mode (from SlotB page)
-        for (i, &code) in profile.shift_remap_a.iter().enumerate() {
+        for (i, &code) in profile.shift_face.iter().enumerate() {
             if code != default_face[i] {
                 shift_map.insert(face_labels[i].into(), serde_json::Value::String(btn_name(code).into()));
             }
         }
-        for (i, &code) in profile.shift_remap_ext.iter().enumerate() {
+        for (i, &code) in profile.shift_ext.iter().enumerate() {
             if code != default_ext[i] {
                 shift_map.insert(ext_labels[i].into(), serde_json::Value::String(btn_name(code).into()));
             }
@@ -621,8 +635,8 @@ impl qobject::ProfileModel {
 
         // Detect shift button: the button missing from ext[] (shifted out, 0x00 at end)
         let default_ext_set: std::collections::HashSet<u8> = default_ext.iter().copied().collect();
-        let current_ext_set: std::collections::HashSet<u8> = profile.remap_ext.iter().copied().filter(|&b| b != 0).collect();
-        let shift_button = if profile.remap_ext.iter().any(|&b| b == 0) {
+        let current_ext_set: std::collections::HashSet<u8> = profile.ext.iter().copied().filter(|&b| b != 0).collect();
+        let shift_button = if profile.ext.iter().any(|&b| b == 0) {
             // Find which default button is missing
             default_ext_set.difference(&current_ext_set)
                 .next()
@@ -635,6 +649,7 @@ impl qobject::ProfileModel {
         let result = serde_json::json!({
             "normal": normal_map,
             "shift": shift_map,
+            "paddles": paddle_map,
             "color": color_str,
             "shift_button": shift_button,
         });
@@ -704,6 +719,19 @@ impl qobject::ProfileModel {
             "rx": mask & 0x08 != 0,
         });
         QString::from(&result.to_string())
+    }
+
+    fn set_paddle_remap(self: Pin<&mut Self>, paddle: i32, target: QString) {
+        if !self.rust().is_usb { return; }
+        let sp = sock_path();
+        let did = self.rust().device_id.clone();
+        if !did.is_empty() {
+            let _ = ipc(&sp, &Req::SetPaddleRemap {
+                device_id: did,
+                paddle: paddle as u8,
+                target: target.to_string(),
+            });
+        }
     }
 
     fn set_shift_button(self: Pin<&mut Self>, btn: QString) {

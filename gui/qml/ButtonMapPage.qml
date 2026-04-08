@@ -7,51 +7,30 @@ Item {
     readonly property bool isPassthrough: profileModel.hw_profile === 0
     readonly property bool canEdit: profileModel.is_usb && !isPassthrough
 
-    // GIP button codes (hardware-level)
+    // GIP remap codes (hardware-level, confirmed by testing)
+    // Note: these differ from input report bit positions!
     readonly property var gipCodes: ({
-            "A": 0x04,
-            "B": 0x05,
-            "X": 0x06,
-            "Y": 0x07,
-            "LB": 0x08,
-            "RB": 0x09,
-            "LT": 0x0A,
-            "RT": 0x0B,
-            "DUp": 0x0C,
-            "DDown": 0x0D,
-            "DLeft": 0x0E,
-            "DRight": 0x0F,
-            "L Stick": 0x10,
-            "R Stick": 0x11,
-            "P1": 0x12,
-            "P2": 0x13,
-            "P3": 0x14,
-            "P4": 0x15
+            "A": 0x04, "B": 0x05, "X": 0x06, "Y": 0x07,
+            "DUp": 0x08, "DDown": 0x09, "DLeft": 0x0A, "DRight": 0x0B,
+            "LB": 0x0C, "RB": 0x0D, "L Stick": 0x0E, "R Stick": 0x0F,
+            "P1": true, "P2": true, "P3": true, "P4": true
         })
 
-    // Buttons that can be remapped — face, bumpers, triggers, dpad, sticks
-    // Paddles are hardware-linked to face buttons in the profile, not individually remappable
-    // View, Menu, Xbox are not remappable
+    // Buttons that can be remapped — face, dpad, bumpers, sticks, paddles
+    // LT, RT, View, Menu, Xbox are NOT remappable in hardware
     readonly property var remappableButtons: ({
-            "A": true,
-            "B": true,
-            "X": true,
-            "Y": true,
-            "LB": true,
-            "RB": true,
-            "LT": true,
-            "RT": true,
-            "DUp": true,
-            "DDown": true,
-            "DLeft": true,
-            "DRight": true,
-            "L Stick": true,
-            "R Stick": true
+            "A": true, "B": true, "X": true, "Y": true,
+            "DUp": true, "DDown": true, "DLeft": true, "DRight": true,
+            "LB": true, "RB": true,
+            "L Stick": true, "R Stick": true,
+            "P1": true, "P2": true, "P3": true, "P4": true
         })
+
+    readonly property bool selectedIsPaddle: selectedButton.startsWith("P") && selectedButton.length <= 2
+    readonly property var paddleIndex: ({"P1": 0, "P2": 1, "P3": 2, "P4": 3})
 
     // Target buttons for remapping (what a button can be remapped TO)
-    // Paddles map to existing controller buttons, not independent actions
-    readonly property var remapTargets: ["A", "B", "X", "Y", "LB", "RB", "LT", "RT", "DUp", "DDown", "DLeft", "DRight", "L Stick", "R Stick"]
+    readonly property var remapTargets: ["A", "B", "X", "Y", "DUp", "DDown", "DLeft", "DRight", "LB", "RB", "L Stick", "R Stick"]
 
     // All buttons for display purposes
     readonly property var allButtonNames: ["A", "B", "X", "Y", "LB", "RB", "View", "Menu", "Xbox", "L Stick", "R Stick", "DUp", "DDown", "DLeft", "DRight", "P1", "P2", "P3", "P4"]
@@ -134,6 +113,9 @@ Item {
         var _v = remapVersion; // force dependency
         if (hwRemaps && hwRemaps.normal && hwRemaps.normal[btnName])
             return hwRemaps.normal[btnName];
+        // Check paddle remaps
+        if (hwRemaps && hwRemaps.paddles && hwRemaps.paddles[btnName])
+            return hwRemaps.paddles[btnName];
         return "";
     }
 
@@ -335,10 +317,32 @@ Item {
                 textFormat: Text.RichText
             }
 
-            // Shift modifier checkbox
+            // Paddle remap — single dropdown
+            ColumnLayout {
+                spacing: 2
+                visible: selectedIsRemappable && selectedIsPaddle
+                Label { text: "Paddle outputs"; color: "#e67e22"; font.pixelSize: 9 }
+                ComboBox {
+                    id: paddleTarget; Layout.preferredWidth: 140
+                    model: remapTargets
+                    onActivated: {
+                        var idx = paddleIndex[selectedButton]
+                        if (idx !== undefined) {
+                            profileModel.set_paddle_remap(idx, remapTargets[currentIndex])
+                        }
+                    }
+                    background: Rectangle { color: "#2a1a00"; radius: 4; border.color: "#e67e22" }
+                    contentItem: Text {
+                        text: paddleTarget.displayText; color: "#e67e22"
+                        leftPadding: 8; verticalAlignment: Text.AlignVCenter; font.pixelSize: 12
+                    }
+                }
+            }
+
+            // Shift modifier checkbox (not for paddles)
             CheckBox {
                 id: shiftModifierCheck
-                visible: selectedIsRemappable
+                visible: selectedIsRemappable && !selectedIsPaddle
                 text: "SHIFT MODIFIER"
                 checked: false
                 contentItem: Text {
@@ -370,7 +374,7 @@ Item {
             // Normal mode remap
             ColumnLayout {
                 spacing: 2
-                visible: selectedIsRemappable && !shiftModifierCheck.checked
+                visible: selectedIsRemappable && !selectedIsPaddle && !shiftModifierCheck.checked
                 Label {
                     text: "Normal"
                     color: "#888"
@@ -400,7 +404,7 @@ Item {
             // Shift mode remap
             ColumnLayout {
                 spacing: 2
-                visible: selectedIsRemappable && !shiftModifierCheck.checked
+                visible: selectedIsRemappable && !selectedIsPaddle && !shiftModifierCheck.checked
                 Label {
                     text: "Shift"
                     color: "#9b59b6"
@@ -429,7 +433,7 @@ Item {
 
             // Shift modifier info
             Label {
-                visible: selectedIsRemappable && shiftModifierCheck.checked
+                visible: selectedIsRemappable && !selectedIsPaddle && shiftModifierCheck.checked
                 text: "Hold <b>" + selectedButton + "</b> to activate shift remaps"
                 color: "#e67e22"
                 font.pixelSize: 12
@@ -437,7 +441,7 @@ Item {
             }
 
             Button {
-                visible: selectedIsRemappable && shiftModifierCheck.checked
+                visible: selectedIsRemappable && !selectedIsPaddle && shiftModifierCheck.checked
                 text: "Set Shift"
                 onClicked: profileModel.set_shift_button(selectedButton)
                 background: Rectangle {
@@ -451,7 +455,7 @@ Item {
             }
 
             Button {
-                visible: selectedIsRemappable && !shiftModifierCheck.checked
+                visible: selectedIsRemappable && !selectedIsPaddle && !shiftModifierCheck.checked
                 text: "Reset"
                 onClicked: {
                     normalTarget.currentIndex = 0

@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-/// GIP button remap codes (hardware-level, from protocol RE)
-/// Codes 0x04-0x0F confirmed from USB captures.
-/// Codes 0x10-0x17 are tentative — need a capture with stick/paddle remaps to confirm.
+/// GIP button remap codes (hardware-level).
+/// These codes are used in the profile remap tables and differ from the input report bit positions.
+/// Confirmed by experimental testing on the Elite 2 controller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum GipButton {
@@ -10,20 +10,14 @@ pub enum GipButton {
     B = 0x05,
     X = 0x06,
     Y = 0x07,
-    LB = 0x08,
-    RB = 0x09,
-    LT = 0x0A,
-    RT = 0x0B,
-    DUp = 0x0C,
-    DDown = 0x0D,
-    DLeft = 0x0E,
-    DRight = 0x0F,
-    LStick = 0x10,
-    RStick = 0x11,
-    P1 = 0x12,
-    P2 = 0x13,
-    P3 = 0x14,
-    P4 = 0x15,
+    DUp = 0x08,
+    DDown = 0x09,
+    DLeft = 0x0A,
+    DRight = 0x0B,
+    LB = 0x0C,
+    RB = 0x0D,
+    LStick = 0x0E,
+    RStick = 0x0F,
 }
 
 impl GipButton {
@@ -33,20 +27,14 @@ impl GipButton {
             0x05 => Some(Self::B),
             0x06 => Some(Self::X),
             0x07 => Some(Self::Y),
-            0x08 => Some(Self::LB),
-            0x09 => Some(Self::RB),
-            0x0A => Some(Self::LT),
-            0x0B => Some(Self::RT),
-            0x0C => Some(Self::DUp),
-            0x0D => Some(Self::DDown),
-            0x0E => Some(Self::DLeft),
-            0x0F => Some(Self::DRight),
-            0x10 => Some(Self::LStick),
-            0x11 => Some(Self::RStick),
-            0x12 => Some(Self::P1),
-            0x13 => Some(Self::P2),
-            0x14 => Some(Self::P3),
-            0x15 => Some(Self::P4),
+            0x08 => Some(Self::DUp),
+            0x09 => Some(Self::DDown),
+            0x0A => Some(Self::DLeft),
+            0x0B => Some(Self::DRight),
+            0x0C => Some(Self::LB),
+            0x0D => Some(Self::RB),
+            0x0E => Some(Self::LStick),
+            0x0F => Some(Self::RStick),
             _ => None,
         }
     }
@@ -57,20 +45,14 @@ impl GipButton {
             "b" => Some(Self::B),
             "x" => Some(Self::X),
             "y" => Some(Self::Y),
-            "lb" => Some(Self::LB),
-            "rb" => Some(Self::RB),
-            "lt" => Some(Self::LT),
-            "rt" => Some(Self::RT),
             "dup" | "up" => Some(Self::DUp),
             "ddown" | "down" => Some(Self::DDown),
             "dleft" | "left" => Some(Self::DLeft),
             "dright" | "right" => Some(Self::DRight),
+            "lb" => Some(Self::LB),
+            "rb" => Some(Self::RB),
             "lstick" | "l stick" => Some(Self::LStick),
             "rstick" | "r stick" => Some(Self::RStick),
-            "p1" => Some(Self::P1),
-            "p2" => Some(Self::P2),
-            "p3" => Some(Self::P3),
-            "p4" => Some(Self::P4),
             _ => None,
         }
     }
@@ -81,20 +63,14 @@ impl GipButton {
             Self::B => "B",
             Self::X => "X",
             Self::Y => "Y",
-            Self::LB => "LB",
-            Self::RB => "RB",
-            Self::LT => "LT",
-            Self::RT => "RT",
             Self::DUp => "DUp",
             Self::DDown => "DDown",
             Self::DLeft => "DLeft",
             Self::DRight => "DRight",
+            Self::LB => "LB",
+            Self::RB => "RB",
             Self::LStick => "LStick",
             Self::RStick => "RStick",
-            Self::P1 => "P1",
-            Self::P2 => "P2",
-            Self::P3 => "P3",
-            Self::P4 => "P4",
         }
     }
 
@@ -108,9 +84,23 @@ pub const MAPPING_SIZE: u8 = 0x38; // 56 bytes
 pub const CURVES_SIZE: u8 = 0x2B;  // 43 bytes
 
 pub const OFF_FLAGS: usize = 0;
-pub const OFF_REMAP_A: usize = 1;
-pub const OFF_REMAP_B: usize = 5;
-pub const OFF_REMAP_EXT: usize = 9;
+pub const OFF_PADDLES: usize = 1;   // [1-4] paddle outputs: [P1,P2,P3,P4] default=[A,B,X,Y]
+pub const OFF_FACE: usize = 5;      // [5-8] face button outputs: [A,B,X,Y] default=[A,B,X,Y]
+pub const OFF_REMAP_A: usize = 5;   // alias: face button remap region
+pub const OFF_REMAP_B: usize = 1;   // alias: paddle remap region
+pub const OFF_REMAP_EXT: usize = 9; // [9-16] ext outputs (see EXT_SLOT_MAP for order)
+
+/// Maps GIP remap code to ext slot index.
+/// Ext codes 0x08-0x0F map directly: slot = code - 0x08.
+/// Slot 0=DUp(0x08), 1=DDown(0x09), 2=DLeft(0x0A), 3=DRight(0x0B),
+///      4=LB(0x0C), 5=RB(0x0D), 6=LStick(0x0E), 7=RStick(0x0F)
+pub fn ext_slot_for_button(code: u8) -> Option<usize> {
+    if code >= 0x08 && code <= 0x0F {
+        Some((code - 0x08) as usize)
+    } else {
+        None
+    }
+}
 pub const OFF_DEADZONES: usize = 28;
 pub const OFF_COLOR_FLAG: usize = 45;
 pub const OFF_COLOR_R: usize = 46;
@@ -119,7 +109,9 @@ pub const OFF_COLOR_B: usize = 48;
 pub const OFF_VIBRATION: usize = 49;
 
 pub const FLAGS_DEFAULT: u8 = 0x11;
-pub const FLAGS_CUSTOM: u8 = 0x10;
+pub const FLAGS_REMAPPED: u8 = 0x04;  // Face/ext buttons remapped
+pub const FLAGS_SHIFT: u8 = 0x01;     // Shift modifier assigned
+pub const FLAGS_CUSTOM: u8 = 0x04;    // Alias for backwards compat
 
 /// Profile page addresses
 /// Each profile has 2 slots (A=normal, B=shift) x 2 types (mapping, curves)
@@ -140,18 +132,19 @@ pub const DEFAULT_CURVE: [u8; 6] = [0x2B, 0x2B, 0x7F, 0x7F, 0xBF, 0xBF];
 
 /// Default face button remap
 pub const DEFAULT_FACE: [u8; 4] = [0x04, 0x05, 0x06, 0x07]; // A B X Y
+/// Default ext values: identity mapping [DUp, DDown, DLeft, DRight, LB, RB, LStick, RStick]
 pub const DEFAULT_EXT: [u8; 8] = [0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F];
 
 /// Decoded profile mapping data
 #[derive(Debug, Clone)]
 pub struct ProfileMapping {
     pub flags: u8,
-    pub remap_a: [u8; 4],
-    pub remap_b: [u8; 4],
-    pub remap_ext: [u8; 8],
-    pub deadzones: [u8; 4], // [LStick, RStick, LTrigger, RTrigger]
-    pub color: Option<(u8, u8, u8)>, // None = default white
-    pub brightness: u8, // 0-100, byte 44
+    pub paddles: [u8; 4],    // bytes 1-4: [P1, P2, P3, P4] outputs
+    pub face: [u8; 4],       // bytes 5-8: [A, B, X, Y] outputs
+    pub ext: [u8; 8],        // bytes 9-16: [DUp, DDown, DLeft, DRight, LB, RB, LStick, RStick]
+    pub deadzones: [u8; 4],
+    pub color: Option<(u8, u8, u8)>,
+    pub brightness: u8,
     pub vibration: (u8, u8),
     pub raw: Vec<u8>,
 }
@@ -170,9 +163,9 @@ impl ProfileMapping {
         };
         Some(Self {
             flags: data[OFF_FLAGS],
-            remap_a: [data[1], data[2], data[3], data[4]],
-            remap_b: [data[5], data[6], data[7], data[8]],
-            remap_ext: [
+            paddles: [data[1], data[2], data[3], data[4]],
+            face: [data[5], data[6], data[7], data[8]],
+            ext: [
                 data[9], data[10], data[11], data[12],
                 data[13], data[14], data[15], data[16],
             ],

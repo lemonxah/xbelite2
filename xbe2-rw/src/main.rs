@@ -66,6 +66,11 @@ fn main() {
             profile::reset_remaps(&mut dev, idx);
             println!("Profile {} remapping reset to default", idx + 1);
         }
+        "reset" => {
+            let idx = parse_profile_idx(&args, 2);
+            profile::reset_profile(&mut dev, idx);
+            println!("Profile {} fully reset to factory default", idx + 1);
+        }
         "deadzone" => {
             let idx = parse_profile_idx(&args, 2);
             if args.len() < 7 {
@@ -244,7 +249,7 @@ fn print_profile_summary(num: usize, m: &ProfileMapping) {
     let btn = |c: u8| GipButton::from_code(c).map(|b| b.name()).unwrap_or("?");
     print!("Profile {num}:");
     print!(" [{}]", if m.is_custom() { "custom" } else { "default" });
-    print!(" face=[{},{},{},{}]", btn(m.remap_a[0]), btn(m.remap_a[1]), btn(m.remap_a[2]), btn(m.remap_a[3]));
+    print!(" face=[{},{},{},{}]", btn(m.face[0]), btn(m.face[1]), btn(m.face[2]), btn(m.face[3]));
     print!(" dz=[{},{},{},{}]", m.deadzones[0], m.deadzones[1], m.deadzones[2], m.deadzones[3]);
     match m.color {
         Some((r, g, b)) => print!(" color=#{r:02x}{g:02x}{b:02x}"),
@@ -256,12 +261,12 @@ fn print_profile_summary(num: usize, m: &ProfileMapping) {
 fn print_mapping(m: &ProfileMapping, page: u8) {
     let btn = |c: u8| GipButton::from_code(c).map(|b| b.name()).unwrap_or("?");
     println!("    page 0x{page:02x}, flags=0x{:02x}", m.flags);
-    println!("    face:     {} {} {} {}", btn(m.remap_a[0]), btn(m.remap_a[1]), btn(m.remap_a[2]), btn(m.remap_a[3]));
-    println!("    shift:    {} {} {} {}", btn(m.remap_b[0]), btn(m.remap_b[1]), btn(m.remap_b[2]), btn(m.remap_b[3]));
+    println!("    face:     {} {} {} {}", btn(m.face[0]), btn(m.face[1]), btn(m.face[2]), btn(m.face[3]));
+    println!("    paddles:  {} {} {} {}", btn(m.paddles[0]), btn(m.paddles[1]), btn(m.paddles[2]), btn(m.paddles[3]));
     println!(
         "    extended: {} {} {} {} {} {} {} {}",
-        btn(m.remap_ext[0]), btn(m.remap_ext[1]), btn(m.remap_ext[2]), btn(m.remap_ext[3]),
-        btn(m.remap_ext[4]), btn(m.remap_ext[5]), btn(m.remap_ext[6]), btn(m.remap_ext[7])
+        btn(m.ext[0]), btn(m.ext[1]), btn(m.ext[2]), btn(m.ext[3]),
+        btn(m.ext[4]), btn(m.ext[5]), btn(m.ext[6]), btn(m.ext[7])
     );
     println!("    deadzones: LS={} RS={} LT={} RT={}", m.deadzones[0], m.deadzones[1], m.deadzones[2], m.deadzones[3]);
     match m.color {

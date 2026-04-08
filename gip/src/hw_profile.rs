@@ -16,18 +16,18 @@ pub struct HwProfileCache {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HwProfile {
-    /// Face button remap for normal mode (SlotA page): [A, B, X, Y]
-    pub remap_a: [u8; 4],
-    /// Face shift layer within SlotA page (bytes 5-8)
-    pub remap_b: [u8; 4],
-    /// Extended remap from SlotA: [LB, RB, LT, RT, DUp, DDown, DLeft, DRight]
-    pub remap_ext: [u8; 8],
-    /// SlotB face remap (shift mode page): [A, B, X, Y]
-    pub shift_remap_a: [u8; 4],
+    /// Paddle outputs (bytes 1-4): [P1, P2, P3, P4]
+    pub paddles: [u8; 4],
+    /// Face button outputs (bytes 5-8): [A, B, X, Y]
+    pub face: [u8; 4],
+    /// Extended outputs (bytes 9-16): [DUp, DDown, DLeft, DRight, LB, RB, LStick, RStick]
+    pub ext: [u8; 8],
+    /// SlotB face remap (shift mode page)
+    pub shift_face: [u8; 4],
     /// SlotB extended remap (shift mode page)
-    pub shift_remap_ext: [u8; 8],
-    /// Paddle/reserved region (bytes 17-27, may contain paddle remap assignments)
-    pub paddle_region: [u8; 11],
+    pub shift_ext: [u8; 8],
+    /// Reserved region (bytes 17-27)
+    pub reserved: [u8; 11],
     /// Dead zones: [LStick, RStick, LTrigger, RTrigger]
     pub deadzones: [u8; 4],
     /// Color (None = default white)
@@ -41,29 +41,24 @@ pub struct HwProfile {
 }
 
 impl HwProfile {
-    /// Check if a specific extended button slot is remapped from its default.
-    /// Extended buttons: index 0=LB, 1=RB, 2=LT, 3=RT, 4=DUp, 5=DDown, 6=DLeft, 7=DRight
     pub fn is_ext_remapped(&self, index: usize) -> bool {
         if index >= 8 { return false; }
-        self.remap_ext[index] != DEFAULT_EXT[index]
+        self.ext[index] != DEFAULT_EXT[index]
     }
 
-    /// Check if a face button slot is remapped from its default (in normal mode).
     pub fn is_face_remapped(&self, index: usize) -> bool {
         if index >= 4 { return false; }
-        self.remap_a[index] != DEFAULT_FACE[index]
+        self.face[index] != DEFAULT_FACE[index]
     }
 
-    /// Check if any button has been remapped at all.
     pub fn has_any_remap(&self) -> bool {
-        self.remap_a != DEFAULT_FACE
-            || self.remap_b != DEFAULT_FACE
-            || self.remap_ext != DEFAULT_EXT
+        self.face != DEFAULT_FACE
+            || self.paddles != DEFAULT_FACE
+            || self.ext != DEFAULT_EXT
     }
 
-    /// Check if paddles have remap data (bytes 17-27 non-zero).
     pub fn has_paddle_remaps(&self) -> bool {
-        self.paddle_region.iter().any(|&b| b != 0)
+        self.paddles != DEFAULT_FACE
     }
 }
 
@@ -83,18 +78,18 @@ pub fn read_from_controller(dev: &mut GipDevice) -> HwProfileCache {
             } else { 0 };
 
             // Also read SlotB (shift page) for shift remaps
-            let (shift_a, shift_ext) = if let Some(shift) = profile::read_mapping(dev, i, 1) {
-                (shift.remap_a, shift.remap_ext)
+            let (shift_f, shift_e) = if let Some(shift) = profile::read_mapping(dev, i, 1) {
+                (shift.face, shift.ext)
             } else {
-                ([0x04, 0x05, 0x06, 0x07], [0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F])
+                (DEFAULT_FACE, DEFAULT_EXT)
             };
             cache.profiles[i] = HwProfile {
-                remap_a: mapping.remap_a,
-                remap_b: mapping.remap_b,
-                remap_ext: mapping.remap_ext,
-                shift_remap_a: shift_a,
-                shift_remap_ext: shift_ext,
-                paddle_region,
+                paddles: mapping.paddles,
+                face: mapping.face,
+                ext: mapping.ext,
+                shift_face: shift_f,
+                shift_ext: shift_e,
+                reserved: paddle_region,
                 deadzones: mapping.deadzones,
                 color: mapping.color,
                 brightness: mapping.brightness,

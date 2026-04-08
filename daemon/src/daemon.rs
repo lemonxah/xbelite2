@@ -602,25 +602,25 @@ fn refresh_hw_profile_cache(ctrl: &mut ControllerState, profile_num: u8) {
         if profile_num >= 1 && profile_num <= 3 {
             let idx = (profile_num - 1) as usize;
             if let Some(mapping) = xbelite2_gip::profile::read_mapping(&mut gip, idx, 0) {
-                let mut paddle_region = [0u8; 11];
+                let mut reserved = [0u8; 11];
                 if mapping.raw.len() >= 28 {
-                    paddle_region[..11].copy_from_slice(&mapping.raw[17..28]);
+                    reserved[..11].copy_from_slice(&mapping.raw[17..28]);
                 }
-                let (shift_a, shift_ext) = if let Some(shift) = xbelite2_gip::profile::read_mapping(&mut gip, idx, 1) {
-                    (shift.remap_a, shift.remap_ext)
+                let (shift_f, shift_e) = if let Some(shift) = xbelite2_gip::profile::read_mapping(&mut gip, idx, 1) {
+                    (shift.face, shift.ext)
                 } else {
-                    ([0x04,0x05,0x06,0x07], [0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F])
+                    (xbelite2_gip::types::DEFAULT_FACE, xbelite2_gip::types::DEFAULT_EXT)
                 };
                 let stick_inversion = if let Some(curves) = xbelite2_gip::profile::read_curves(&mut gip, idx, 0) {
                     if curves.raw.len() > 27 { curves.raw[27] } else { 0 }
                 } else { 0 };
                 ctrl.hw_cache.profiles[idx] = xbelite2_gip::hw_profile::HwProfile {
-                    remap_a: mapping.remap_a,
-                    remap_b: mapping.remap_b,
-                    remap_ext: mapping.remap_ext,
-                    shift_remap_a: shift_a,
-                    shift_remap_ext: shift_ext,
-                    paddle_region,
+                    paddles: mapping.paddles,
+                    face: mapping.face,
+                    ext: mapping.ext,
+                    shift_face: shift_f,
+                    shift_ext: shift_e,
+                    reserved,
                     deadzones: mapping.deadzones,
                     color: mapping.color,
                     brightness: mapping.brightness,
@@ -1226,6 +1226,34 @@ fn handle_ipc_request(
                     log::info!("Remapped {} -> normal={}, shift={} on profile {}", src, normal_dst, shift_dst, hw);
                 }
                 // Refresh cache
+                refresh_hw_profile_cache(ctrl, hw);
+                IpcResponse::Ok
+            } else {
+                IpcResponse::Error { message: format!("Device {device_id} not found") }
+            }
+        }
+        IpcRequest::SetPaddleRemap { device_id, paddle, target } => {
+            if let Some(ctrl) = controllers.get_mut(&device_id) {
+                if !matches!(&ctrl.source, InputSource::UsbMiscDev { .. }) {
+                    return IpcResponse::Error { message: "Paddle remap requires USB".into() };
+                }
+                let hw = ctrl.prev_state.hw_profile;
+                if hw < 1 || hw > 3 {
+                    return IpcResponse::Error { message: "Not on an editable profile".into() };
+                }
+                let idx = (hw - 1) as usize;
+                let target_btn = match xbelite2_gip::types::GipButton::from_name(&target) {
+                    Some(b) => b,
+                    None => return IpcResponse::Error { message: format!("Unknown button: {target}") },
+                };
+                if paddle > 3 {
+                    return IpcResponse::Error { message: "Paddle must be 0-3".into() };
+                }
+                if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
+                    gip.unlock();
+                    xbelite2_gip::profile::remap_paddles(&mut gip, idx, &[(paddle as usize, target_btn)]);
+                    log::info!("Remapped P{} -> {} on profile {}", paddle + 1, target, hw);
+                }
                 refresh_hw_profile_cache(ctrl, hw);
                 IpcResponse::Ok
             } else {

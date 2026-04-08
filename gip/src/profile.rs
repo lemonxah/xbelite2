@@ -11,36 +11,58 @@ pub fn read_page(dev: &mut GipDevice, page: u8, size: u8) -> Option<Vec<u8>> {
     Some(payload[4..].to_vec())
 }
 
-/// Write a raw profile page to the controller. Requires unlock() first.
+/// Write a raw profile page to the controller.
+/// Uses fire-and-forget to avoid ring buffer response conflicts.
 pub fn write_page(dev: &mut GipDevice, page: u8, data: &[u8]) {
-    let mut payload = vec![0x01, page, data.len() as u8];
-    payload.extend_from_slice(data);
-    dev.vendor_cmd(&payload);
+    use std::sync::atomic::{AtomicU8, Ordering};
+    static WRITE_SEQ: AtomicU8 = AtomicU8::new(0xD0);
+    let seq = WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut pkt = vec![0x4D, 0x10, seq, (3 + data.len()) as u8, 0x01, page, data.len() as u8];
+    pkt.extend_from_slice(data);
+    let _ = dev.send(&pkt);
+    std::thread::sleep(std::time::Duration::from_millis(50));
 }
 
-/// Commit/persist written profile data to controller flash.
-/// Must be called after writing pages, otherwise changes are lost on reboot.
-/// Sequence: re-init extended reports, then send persist command.
+/// Full unlock dance before writing profile pages.
+pub fn begin_write(dev: &mut GipDevice) {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    static SEQ: AtomicU8 = AtomicU8::new(0xA0);
+    for _ in 0..2 {
+        let s = SEQ.fetch_add(1, Ordering::Relaxed);
+        let _ = dev.send(&[0x4D, 0x10, s, 0x02, 0x07, 0x00]);
+    }
+    let s = SEQ.fetch_add(1, Ordering::Relaxed);
+    let _ = dev.send(&[0x4D, 0x10, s, 0x01, 0x03]);
+    let s = SEQ.fetch_add(1, Ordering::Relaxed);
+    let _ = dev.send(&[0x4D, 0x10, s, 0x02, 0x07, 0x00]);
+    for _ in 0..2 {
+        let s = SEQ.fetch_add(1, Ordering::Relaxed);
+        let _ = dev.send(&[0x4D, 0x10, s, 0x01, 0x03]);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    dev.drain();
+}
+
+/// Commit written profile data — sends POWER to reload profile.
 pub fn commit(dev: &mut GipDevice) {
-    dev.init_extended();
-    dev.vendor_cmd(&[0x03]);
+    let _ = dev.send_cmd(0x05, 0x20, &[0x05]);
 }
 
-/// Read the mapping page for a profile (1-3) and slot (0=A/normal, 1=B/shift).
+/// Read the mapping page for a profile (0-indexed) and slot (0=A/normal, 1=B/shift).
 pub fn read_mapping(dev: &mut GipDevice, profile: usize, slot: usize) -> Option<ProfileMapping> {
     let page = PROFILE_MAPPING_PAGES[profile][slot];
     let raw = read_page(dev, page, MAPPING_SIZE)?;
     ProfileMapping::from_raw(&raw)
 }
 
-/// Read the curves page for a profile (1-3) and slot (0=A, 1=B).
+/// Read the curves page for a profile and slot.
 pub fn read_curves(dev: &mut GipDevice, profile: usize, slot: usize) -> Option<ProfileCurves> {
     let page = PROFILE_CURVES_PAGES[profile][slot];
     let raw = read_page(dev, page, CURVES_SIZE)?;
     ProfileCurves::from_raw(&raw)
 }
 
-/// Write a mapping page. Modifies raw bytes and writes back.
+/// Write a mapping page.
 pub fn write_mapping(dev: &mut GipDevice, profile: usize, slot: usize, data: &[u8]) {
     let page = PROFILE_MAPPING_PAGES[profile][slot];
     write_page(dev, page, data);
@@ -52,13 +74,66 @@ pub fn write_curves(dev: &mut GipDevice, profile: usize, slot: usize, data: &[u8
     write_page(dev, page, data);
 }
 
+// --- Helper: apply a remap to a data buffer ---
+
+fn apply_remap_to_data(data: &mut Vec<u8>, from: GipButton, to: GipButton) {
+    let fc = from.code();
+    let tc = to.code();
+    if fc >= 0x04 && fc <= 0x07 {
+        // Face button
+        data[OFF_FACE + (fc - 0x04) as usize] = tc;
+    } else if let Some(slot) = ext_slot_for_button(fc) {
+        // Extended: DPad, LB, RB, LStick, RStick
+        data[OFF_REMAP_EXT + slot] = tc;
+    }
+}
+
+// --- Public remap functions ---
+
+/// Remap buttons in normal mode (SlotA).
+pub fn remap_buttons(dev: &mut GipDevice, profile: usize, remaps: &[(GipButton, GipButton)]) {
+    let page = PROFILE_MAPPING_PAGES[profile][0];
+    if let Some(mut data) = read_page(dev, page, MAPPING_SIZE) {
+        for &(from, to) in remaps {
+            apply_remap_to_data(&mut data, from, to);
+        }
+        write_page(dev, page, &data);
+    }
+    commit(dev);
+}
+
+/// Remap paddles. paddle_idx: 0=P1, 1=P2, 2=P3, 3=P4.
+pub fn remap_paddles(dev: &mut GipDevice, profile: usize, remaps: &[(usize, GipButton)]) {
+    let page = PROFILE_MAPPING_PAGES[profile][0];
+    if let Some(mut data) = read_page(dev, page, MAPPING_SIZE) {
+        for &(paddle_idx, to) in remaps {
+            if paddle_idx < 4 {
+                data[OFF_PADDLES + paddle_idx] = to.code();
+            }
+        }
+        write_page(dev, page, &data);
+    }
+    commit(dev);
+}
+
+/// Remap buttons in shift mode (SlotB).
+pub fn remap_shift(dev: &mut GipDevice, profile: usize, remaps: &[(GipButton, GipButton)]) {
+    let page = PROFILE_MAPPING_PAGES[profile][1];
+    if let Some(mut data) = read_page(dev, page, MAPPING_SIZE) {
+        for &(from, to) in remaps {
+            apply_remap_to_data(&mut data, from, to);
+        }
+        write_page(dev, page, &data);
+    }
+    commit(dev);
+}
+
 /// Set the LED color for a profile. Updates both slots and persists.
 pub fn set_color(dev: &mut GipDevice, profile: usize, r: u8, g: u8, b: u8) {
     for slot in 0..2 {
         let page = PROFILE_MAPPING_PAGES[profile][slot];
-        if let Some(raw) = read_page(dev, page, MAPPING_SIZE) {
-            let mut data = raw;
-            data[OFF_COLOR_FLAG] = 0x00; // custom
+        if let Some(mut data) = read_page(dev, page, MAPPING_SIZE) {
+            data[OFF_COLOR_FLAG] = 0x00;
             data[OFF_COLOR_R] = r;
             data[OFF_COLOR_G] = g;
             data[OFF_COLOR_B] = b;
@@ -68,12 +143,11 @@ pub fn set_color(dev: &mut GipDevice, profile: usize, r: u8, g: u8, b: u8) {
     commit(dev);
 }
 
-/// Reset color to default (white) for a profile.
+/// Reset color to default.
 pub fn reset_color(dev: &mut GipDevice, profile: usize) {
     for slot in 0..2 {
         let page = PROFILE_MAPPING_PAGES[profile][slot];
-        if let Some(raw) = read_page(dev, page, MAPPING_SIZE) {
-            let mut data = raw;
+        if let Some(mut data) = read_page(dev, page, MAPPING_SIZE) {
             data[OFF_COLOR_FLAG] = 0xFF;
             data[OFF_COLOR_R] = 0;
             data[OFF_COLOR_G] = 0;
@@ -84,12 +158,11 @@ pub fn reset_color(dev: &mut GipDevice, profile: usize) {
     commit(dev);
 }
 
-/// Set dead zones for a profile. Updates both slots and persists.
+/// Set dead zones for a profile. Updates both slots.
 pub fn set_deadzones(dev: &mut GipDevice, profile: usize, lstick: u8, rstick: u8, ltrig: u8, rtrig: u8) {
     for slot in 0..2 {
         let page = PROFILE_MAPPING_PAGES[profile][slot];
-        if let Some(raw) = read_page(dev, page, MAPPING_SIZE) {
-            let mut data = raw;
+        if let Some(mut data) = read_page(dev, page, MAPPING_SIZE) {
             data[OFF_DEADZONES] = lstick;
             data[OFF_DEADZONES + 1] = rstick;
             data[OFF_DEADZONES + 2] = ltrig;
@@ -100,12 +173,11 @@ pub fn set_deadzones(dev: &mut GipDevice, profile: usize, lstick: u8, rstick: u8
     commit(dev);
 }
 
-/// Set vibration intensity for a profile. Updates both slots and persists.
+/// Set vibration intensity for a profile. Updates both slots.
 pub fn set_vibration(dev: &mut GipDevice, profile: usize, left: u8, right: u8) {
     for slot in 0..2 {
         let page = PROFILE_MAPPING_PAGES[profile][slot];
-        if let Some(raw) = read_page(dev, page, MAPPING_SIZE) {
-            let mut data = raw;
+        if let Some(mut data) = read_page(dev, page, MAPPING_SIZE) {
             data[OFF_VIBRATION] = left;
             data[OFF_VIBRATION + 1] = right;
             write_page(dev, page, &data);
@@ -114,59 +186,13 @@ pub fn set_vibration(dev: &mut GipDevice, profile: usize, left: u8, right: u8) {
     commit(dev);
 }
 
-/// Remap buttons in normal mode (SlotA only).
-pub fn remap_buttons(dev: &mut GipDevice, profile: usize, remaps: &[(GipButton, GipButton)]) {
-    let page = PROFILE_MAPPING_PAGES[profile][0]; // SlotA
-    if let Some(raw) = read_page(dev, page, MAPPING_SIZE) {
-        let mut data = raw;
-        for &(from, to) in remaps {
-            let from_code = from.code();
-            let to_code = to.code();
-            if from_code >= 0x04 && from_code <= 0x07 {
-                let idx = (from_code - 0x04) as usize;
-                data[OFF_REMAP_A + idx] = to_code;
-            } else if from_code >= 0x08 && from_code <= 0x0F {
-                let idx = (from_code - 0x08) as usize;
-                data[OFF_REMAP_EXT + idx] = to_code;
-            }
-        }
-        data[OFF_FLAGS] = FLAGS_CUSTOM;
-        write_page(dev, page, &data);
-    }
-    commit(dev);
-}
-
-/// Remap buttons in shift mode (SlotB page).
-/// On the SlotB page, face remaps are at OFF_REMAP_A (bytes 1-4), same position as SlotA.
-pub fn remap_shift(dev: &mut GipDevice, profile: usize, remaps: &[(GipButton, GipButton)]) {
-    let page = PROFILE_MAPPING_PAGES[profile][1]; // SlotB
-    if let Some(raw) = read_page(dev, page, MAPPING_SIZE) {
-        let mut data = raw;
-        for &(from, to) in remaps {
-            let from_code = from.code();
-            let to_code = to.code();
-            if from_code >= 0x04 && from_code <= 0x07 {
-                let idx = (from_code - 0x04) as usize;
-                data[OFF_REMAP_A + idx] = to_code; // SlotB uses same offset for face remaps
-            } else if from_code >= 0x08 && from_code <= 0x0F {
-                let idx = (from_code - 0x08) as usize;
-                data[OFF_REMAP_EXT + idx] = to_code;
-            }
-        }
-        data[OFF_FLAGS] = FLAGS_CUSTOM;
-        write_page(dev, page, &data);
-    }
-    commit(dev);
-}
-
 /// Reset all button remaps to default for a profile.
 pub fn reset_remaps(dev: &mut GipDevice, profile: usize) {
     for slot in 0..2 {
         let page = PROFILE_MAPPING_PAGES[profile][slot];
-        if let Some(raw) = read_page(dev, page, MAPPING_SIZE) {
-            let mut data = raw;
-            data[OFF_REMAP_A..OFF_REMAP_A + 4].copy_from_slice(&DEFAULT_FACE);
-            data[OFF_REMAP_B..OFF_REMAP_B + 4].copy_from_slice(&DEFAULT_FACE);
+        if let Some(mut data) = read_page(dev, page, MAPPING_SIZE) {
+            data[OFF_PADDLES..OFF_PADDLES + 4].copy_from_slice(&DEFAULT_FACE);
+            data[OFF_FACE..OFF_FACE + 4].copy_from_slice(&DEFAULT_FACE);
             data[OFF_REMAP_EXT..OFF_REMAP_EXT + 8].copy_from_slice(&DEFAULT_EXT);
             write_page(dev, page, &data);
         }
@@ -174,20 +200,42 @@ pub fn reset_remaps(dev: &mut GipDevice, profile: usize) {
     commit(dev);
 }
 
+/// Fully reset a profile to factory defaults (all 4 pages).
+pub fn reset_profile(dev: &mut GipDevice, profile: usize) {
+    let mut mapping = vec![0u8; 56];
+    mapping[OFF_FLAGS] = FLAGS_DEFAULT;
+    mapping[OFF_PADDLES..OFF_PADDLES + 4].copy_from_slice(&DEFAULT_FACE);
+    mapping[OFF_FACE..OFF_FACE + 4].copy_from_slice(&DEFAULT_FACE);
+    mapping[OFF_REMAP_EXT..OFF_REMAP_EXT + 8].copy_from_slice(&DEFAULT_EXT);
+    mapping[OFF_DEADZONES] = 100;
+    mapping[OFF_DEADZONES + 1] = 100;
+    mapping[OFF_DEADZONES + 2] = 100;
+    mapping[OFF_DEADZONES + 3] = 100;
+    let default_ranges: [u8; 12] = [0xFF, 0x00, 0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00, 0x00];
+    mapping[32..44].copy_from_slice(&default_ranges);
+    mapping[OFF_BRIGHTNESS] = 100;
+    mapping[OFF_COLOR_FLAG] = 0xFF;
+    mapping[OFF_VIBRATION] = 48;
+    mapping[OFF_VIBRATION + 1] = 48;
+
+    let mut curves = vec![0u8; 43];
+    curves[0] = FLAGS_DEFAULT;
+    for i in 0..4 {
+        curves[1 + i * 6..7 + i * 6].copy_from_slice(&DEFAULT_CURVE);
+    }
+
+    for slot in 0..2 {
+        write_page(dev, PROFILE_MAPPING_PAGES[profile][slot], &mapping);
+        write_page(dev, PROFILE_CURVES_PAGES[profile][slot], &curves);
+    }
+    commit(dev);
+}
+
 /// Set stick curves for a profile. Updates both slots.
-/// Each curve is [x1, y1, x2, y2, x3, y3] — 3 control points.
-pub fn set_curves(
-    dev: &mut GipDevice,
-    profile: usize,
-    lx: [u8; 6],
-    ly: [u8; 6],
-    rx: [u8; 6],
-    ry: [u8; 6],
-) {
+pub fn set_curves(dev: &mut GipDevice, profile: usize, lx: [u8; 6], ly: [u8; 6], rx: [u8; 6], ry: [u8; 6]) {
     for slot in 0..2 {
         let page = PROFILE_CURVES_PAGES[profile][slot];
-        if let Some(raw) = read_page(dev, page, CURVES_SIZE) {
-            let mut data = raw;
+        if let Some(mut data) = read_page(dev, page, CURVES_SIZE) {
             data[1..7].copy_from_slice(&lx);
             data[7..13].copy_from_slice(&ly);
             data[13..19].copy_from_slice(&rx);
@@ -198,12 +246,12 @@ pub fn set_curves(
     commit(dev);
 }
 
-/// Reset stick curves to default linear for a profile.
+/// Reset stick curves to default linear.
 pub fn reset_curves(dev: &mut GipDevice, profile: usize) {
     set_curves(dev, profile, DEFAULT_CURVE, DEFAULT_CURVE, DEFAULT_CURVE, DEFAULT_CURVE);
 }
 
-/// Read all profile data (both slots, mapping + curves) for a profile (0-indexed).
+/// Read all profile data (both slots, mapping + curves).
 pub struct FullProfile {
     pub mapping_a: Option<ProfileMapping>,
     pub mapping_b: Option<ProfileMapping>,

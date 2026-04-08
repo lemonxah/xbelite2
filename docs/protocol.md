@@ -230,9 +230,9 @@ SlotA = normal mode. SlotB = shift/alternate mapping (activated by holding a shi
           bit 2 (0x04): has button/paddle remaps
           bit 4 (0x10): unmodified (default state)
           Common values: 0x11=default, 0x00=modified, 0x01=shift, 0x04=remapped, 0x05=remap+keyboard
-[1-4]   face button remap: [A slot, B slot, X slot, Y slot]
-[5-8]   face button remap (shift layer): [A shift, B shift, X shift, Y shift]
-[9-16]  extended remap: 8 indexed slots (see below)
+[1-4]   paddle outputs: [P1, P2, P3, P4] — what each paddle sends (default: [A, B, X, Y])
+[5-8]   face button outputs: [A, B, X, Y] — what each face button sends (default: [A, B, X, Y])
+[9-16]  extended remap: [DUp, DDown, DLeft, DRight, LB, RB, LStick, RStick]
 [17-27] keyboard/special remap data:
           [17]    keyboard remap source button GIP code (0 if none)
           [18-27] additional remap metadata (zeros when unused)
@@ -264,17 +264,21 @@ SlotA = normal mode. SlotB = shift/alternate mapping (activated by holding a shi
 | 0x05 | B |
 | 0x06 | X |
 | 0x07 | Y |
-| 0x08 | LB |
-| 0x09 | RB |
-| 0x0A | LT |
-| 0x0B | RT |
-| 0x0C | D-pad Up |
-| 0x0D | D-pad Down |
-| 0x0E | D-pad Left |
-| 0x0F | D-pad Right |
+| 0x08 | D-pad Up |
+| 0x09 | D-pad Down |
+| 0x0A | D-pad Left |
+| 0x0B | D-pad Right |
+| 0x0C | LB |
+| 0x0D | RB |
+| 0x0E | Left Stick Click |
+| 0x0F | Right Stick Click |
 
-Default face mapping: `[0x04, 0x05, 0x06, 0x07]` (A, B, X, Y).
-Default ext mapping: `[0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F]` (LB through DRight).
+Note: these remap codes differ from the GIP input report bit positions!
+LT and RT are NOT remappable through profile data.
+
+Default paddle mapping: `[0x04, 0x05, 0x06, 0x07]` (P1→A, P2→B, P3→X, P4→Y).
+Default face mapping: `[0x04, 0x05, 0x06, 0x07]` (A→A, B→B, X→X, Y→Y).
+Default ext mapping: `[0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F]` (DUp, DDown, DLeft, DRight, LB, RB, LStick, RStick).
 
 #### Extended Remap Slots (bytes 9-16)
 
@@ -332,7 +336,8 @@ Before any profile, LED, or name writes:
 2. Perform writes (all 4 pages for a profile: mapping A, mapping B, curves A, curves B)
 3. Re-init extended reports: `4D 10 <seq> 02 07 00`
 4. Send COMMIT: `4D 10 <seq> 01 03` (same as unlock — persists to flash)
-5. Optionally read back to verify
+5. Send POWER reload: `05 20 <seq> 01 05` (makes controller reload profile from flash)
+6. Optionally read back to verify
 
 ---
 
