@@ -611,6 +611,9 @@ fn refresh_hw_profile_cache(ctrl: &mut ControllerState, profile_num: u8) {
                 } else {
                     ([0x04,0x05,0x06,0x07], [0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F])
                 };
+                let stick_inversion = if let Some(curves) = xbelite2_gip::profile::read_curves(&mut gip, idx, 0) {
+                    if curves.raw.len() > 27 { curves.raw[27] } else { 0 }
+                } else { 0 };
                 ctrl.hw_cache.profiles[idx] = xbelite2_gip::hw_profile::HwProfile {
                     remap_a: mapping.remap_a,
                     remap_b: mapping.remap_b,
@@ -621,6 +624,7 @@ fn refresh_hw_profile_cache(ctrl: &mut ControllerState, profile_num: u8) {
                     deadzones: mapping.deadzones,
                     color: mapping.color,
                     brightness: mapping.brightness,
+                    stick_inversion,
                     vibration: mapping.vibration,
                 };
                 log::info!("Refreshed hw profile {} cache", profile_num);
@@ -860,11 +864,11 @@ fn parse_gip_input(data: &[u8]) -> GamepadState {
     state.left_trigger  = u16::from_le_bytes([data[6], data[7]]);
     state.right_trigger = u16::from_le_bytes([data[8], data[9]]);
 
-    // Sticks (i16 LE)
+    // Sticks (i16 LE) — GIP Y axes are inverted vs Linux convention, negate them
     state.left_stick_x  = i16::from_le_bytes([data[10], data[11]]);
-    state.left_stick_y  = i16::from_le_bytes([data[12], data[13]]);
+    state.left_stick_y  = !i16::from_le_bytes([data[12], data[13]]);
     state.right_stick_x = i16::from_le_bytes([data[14], data[15]]);
-    state.right_stick_y = i16::from_le_bytes([data[16], data[17]]);
+    state.right_stick_y = !i16::from_le_bytes([data[16], data[17]]);
 
     // Paddles — Elite 2 reports these at byte 18 in extended data
     if data.len() > 18 {
@@ -1271,6 +1275,40 @@ fn handle_ipc_request(
                     let cache_dir = std::path::PathBuf::from("/var/cache/xbelite2");
                     let _ = hw_profile::save_to(&ctrl.hw_cache, &cache_dir);
                     log::info!("Set profile {} brightness to {}", hw, brightness);
+                }
+                IpcResponse::Ok
+            } else {
+                IpcResponse::Error { message: format!("Device {device_id} not found") }
+            }
+        }
+        IpcRequest::SetStickInversion { device_id, inversion_mask } => {
+            if let Some(ctrl) = controllers.get_mut(&device_id) {
+                if !matches!(&ctrl.source, InputSource::UsbMiscDev { .. }) {
+                    return IpcResponse::Error { message: "Stick inversion requires USB".into() };
+                }
+                let hw = ctrl.prev_state.hw_profile;
+                if hw < 1 || hw > 3 {
+                    return IpcResponse::Error { message: "Not on an editable profile".into() };
+                }
+                let idx = (hw - 1) as usize;
+                if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
+                    gip.unlock();
+                    // Read-modify-write curves page byte 27 on both slots
+                    for slot in 0..2 {
+                        let page = xbelite2_gip::types::PROFILE_CURVES_PAGES[idx][slot];
+                        if let Some(raw) = xbelite2_gip::profile::read_page(&mut gip, page, xbelite2_gip::types::CURVES_SIZE) {
+                            let mut data = raw;
+                            if data.len() > 27 {
+                                data[27] = inversion_mask;
+                            }
+                            xbelite2_gip::profile::write_page(&mut gip, page, &data);
+                        }
+                    }
+                    xbelite2_gip::profile::commit(&mut gip);
+                    ctrl.hw_cache.profiles[idx].stick_inversion = inversion_mask;
+                    let cache_dir = std::path::PathBuf::from("/var/cache/xbelite2");
+                    let _ = hw_profile::save_to(&ctrl.hw_cache, &cache_dir);
+                    log::info!("Set profile {} stick inversion mask to 0x{:02x}", hw, inversion_mask);
                 }
                 IpcResponse::Ok
             } else {

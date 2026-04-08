@@ -206,23 +206,6 @@ ApplicationWindow {
 
                 Item { width: 20 }
 
-                Button {
-                    text: "Save"
-                    Layout.preferredWidth: 80
-                    Layout.preferredHeight: 32
-                    onClicked: profileModel.save_profile()
-                    background: Rectangle {
-                        color: parent.hovered ? "#1a8c1a" : "#107c10"
-                        radius: 4
-                    }
-                    contentItem: Text {
-                        text: parent.text
-                        color: "white"
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                        font.bold: true
-                    }
-                }
             }
         }
 

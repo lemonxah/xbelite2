@@ -14,7 +14,24 @@ Item {
     property real liveX: (axisIndex === 0 ? profileModel.live_lx : profileModel.live_rx) / 32768.0
     property real liveY: (axisIndex === 0 ? profileModel.live_ly : profileModel.live_ry) / 32768.0
 
-    Component.onCompleted: loadCurve()
+    // Stick inversion state (refreshed on profile change)
+    property var stickInversion: ({})
+    property int invVersion: 0
+
+    function refreshInversion() {
+        try {
+            stickInversion = JSON.parse(profileModel.get_stick_inversion())
+        } catch(e) {
+            stickInversion = {}
+        }
+    }
+
+    Connections {
+        target: profileModel
+        function onHw_profileChanged() { refreshInversion(); loadCurve() }
+    }
+
+    Component.onCompleted: { refreshInversion(); loadCurve() }
 
     function loadCurve() {
         var json = [
@@ -170,6 +187,58 @@ Item {
                         text: Math.round(dzSlider.value) + "%"
                         color: "#888"; font.pixelSize: 11
                         Layout.preferredWidth: 35
+                    }
+                }
+
+                // Axis inversion toggles
+                Label {
+                    text: "Inversion"
+                    color: "#888"; font.pixelSize: 11
+                    Layout.alignment: Qt.AlignHCenter
+                    Layout.topMargin: 8
+                }
+
+                CheckBox {
+                    id: invertX
+                    text: "Invert X"
+                    enabled: profileModel.is_usb && profileModel.hw_profile > 0
+                    checked: {
+                        var _v = invVersion
+                        return axisIndex === 0 ? (stickInversion.lx || false) : (stickInversion.rx || false)
+                    }
+                    onClicked: {
+                        if (axisIndex === 0) stickInversion.lx = checked
+                        else stickInversion.rx = checked
+                        invVersion++
+                        profileModel.set_stick_invert(axisIndex === 0 ? 0 : 1, 0, checked)
+                    }
+                    contentItem: Text {
+                        text: parent.text; color: parent.enabled ? "#e0e0e0" : "#555"
+                        font.pixelSize: 11
+                        leftPadding: parent.indicator.width + 6
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+
+                CheckBox {
+                    id: invertY
+                    text: "Invert Y"
+                    enabled: profileModel.is_usb && profileModel.hw_profile > 0
+                    checked: {
+                        var _v = invVersion
+                        return axisIndex === 0 ? (stickInversion.ly || false) : (stickInversion.ry || false)
+                    }
+                    onClicked: {
+                        if (axisIndex === 0) stickInversion.ly = checked
+                        else stickInversion.ry = checked
+                        invVersion++
+                        profileModel.set_stick_invert(axisIndex === 0 ? 0 : 1, 1, checked)
+                    }
+                    contentItem: Text {
+                        text: parent.text; color: parent.enabled ? "#e0e0e0" : "#555"
+                        font.pixelSize: 11
+                        leftPadding: parent.indicator.width + 6
+                        verticalAlignment: Text.AlignVCenter
                     }
                 }
             }

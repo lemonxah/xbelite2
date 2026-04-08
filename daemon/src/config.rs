@@ -113,6 +113,12 @@ pub enum IpcRequest {
         normal_dst: String,
         shift_dst: String,
     },
+    /// Set stick axis inversion on current hw profile (USB only)
+    SetStickInversion {
+        device_id: String,
+        /// Bitmask: bit0=LY, bit1=RY (from protocol)
+        inversion_mask: u8,
+    },
     /// Set hardware profile LED brightness (USB only, 0-100)
     SetProfileBrightness {
         device_id: String,

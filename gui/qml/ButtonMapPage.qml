@@ -145,13 +145,6 @@ Item {
         return "";
     }
 
-    Timer {
-        id: refreshTimer
-        interval: 1000 // ms — confirm from daemon cache after write
-        repeat: false
-        onTriggered: refreshRemaps()
-    }
-
     Connections {
         target: profileModel
         function onHw_profileChanged() {
@@ -175,6 +168,23 @@ Item {
         // Find index in remapTargets (0 = Default, 1+ = button name)
         normalTarget.currentIndex = normalVal === "" ? 0 : remapTargets.indexOf(normalVal) + 1;
         shiftTarget.currentIndex = shiftVal === "" ? 0 : remapTargets.indexOf(shiftVal) + 1;
+    }
+
+    // Apply remap immediately from current dropdown state
+    function applyCurrentRemap() {
+        if (selectedButton === "" || !selectedIsRemappable) return
+        var src = selectedButton
+        var normalBtn = normalTarget.currentIndex === 0 ? src : remapTargets[normalTarget.currentIndex - 1]
+        var shiftBtn = shiftTarget.currentIndex === 0 ? src : remapTargets[shiftTarget.currentIndex - 1]
+        profileModel.set_hw_remap(src, normalBtn, shiftBtn)
+        // Optimistic update
+        if (!hwRemaps.normal) hwRemaps.normal = {}
+        if (!hwRemaps.shift) hwRemaps.shift = {}
+        if (normalBtn === src) delete hwRemaps.normal[src]
+        else hwRemaps.normal[src] = normalBtn
+        if (shiftBtn === src) delete hwRemaps.shift[src]
+        else hwRemaps.shift[src] = shiftBtn
+        remapVersion++
     }
 
     Component.onCompleted: refreshRemaps()
@@ -371,6 +381,7 @@ Item {
                     Layout.preferredWidth: 120
                     model: ["(Default)"].concat(remapTargets)
                     enabled: !shiftModifierCheck.checked
+                    onActivated: applyCurrentRemap()
                     background: Rectangle {
                         color: "#222"
                         radius: 4
@@ -400,6 +411,7 @@ Item {
                     Layout.preferredWidth: 120
                     model: ["(Default)"].concat(remapTargets)
                     enabled: !shiftModifierCheck.checked
+                    onActivated: applyCurrentRemap()
                     background: Rectangle {
                         color: "#1a1028"
                         radius: 4
@@ -425,66 +437,34 @@ Item {
             }
 
             Button {
-                visible: selectedIsRemappable
-                text: shiftModifierCheck.checked ? "Set Shift" : "Apply"
-                onClicked: {
-                    if (shiftModifierCheck.checked) {
-                        profileModel.set_shift_button(selectedButton);
-                    } else {
-                        var src = selectedButton;
-                        var normalBtn = normalTarget.currentIndex === 0 ? src : remapTargets[normalTarget.currentIndex - 1];
-                        var shiftBtn = shiftTarget.currentIndex === 0 ? src : remapTargets[shiftTarget.currentIndex - 1];
-                        profileModel.set_hw_remap(src, normalBtn, shiftBtn);
-                        // Optimistically update local remap display
-                        if (!hwRemaps.normal)
-                            hwRemaps.normal = {};
-                        if (!hwRemaps.shift)
-                            hwRemaps.shift = {};
-                        if (normalBtn === src) {
-                            delete hwRemaps.normal[src];
-                        } else {
-                            hwRemaps.normal[src] = normalBtn;
-                        }
-                        if (shiftBtn === src) {
-                            delete hwRemaps.shift[src];
-                        } else {
-                            hwRemaps.shift[src] = shiftBtn;
-                        }
-                        remapVersion++;
-                    }
-                    // Also refresh from cache after daemon finishes
-                    refreshTimer.start();
-                }
+                visible: selectedIsRemappable && shiftModifierCheck.checked
+                text: "Set Shift"
+                onClicked: profileModel.set_shift_button(selectedButton)
                 background: Rectangle {
-                    color: parent.hovered ? (shiftModifierCheck.checked ? "#f39c12" : "#1a8c1a") : (shiftModifierCheck.checked ? "#e67e22" : "#107c10")
+                    color: parent.hovered ? "#f39c12" : "#e67e22"
                     radius: 4
                 }
                 contentItem: Text {
-                    text: parent.text
-                    color: "white"
-                    font.bold: true
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
+                    text: parent.text; color: "white"; font.bold: true
+                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
                 }
             }
 
             Button {
-                visible: selectedIsRemappable
+                visible: selectedIsRemappable && !shiftModifierCheck.checked
                 text: "Reset"
                 onClicked: {
-                    shiftModifierCheck.checked = false;
-                    profileModel.set_hw_remap(selectedButton, selectedButton, selectedButton);
-                    refreshTimer.start();
+                    normalTarget.currentIndex = 0
+                    shiftTarget.currentIndex = 0
+                    applyCurrentRemap()
                 }
                 background: Rectangle {
                     color: parent.hovered ? "#e74c3c" : "#333"
                     radius: 4
                 }
                 contentItem: Text {
-                    text: parent.text
-                    color: "#ccc"
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
+                    text: parent.text; color: "#ccc"
+                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
                 }
             }
 

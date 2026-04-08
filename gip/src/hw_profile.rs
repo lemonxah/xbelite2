@@ -34,6 +34,8 @@ pub struct HwProfile {
     pub color: Option<(u8, u8, u8)>,
     /// LED brightness (0-100, default 100)
     pub brightness: u8,
+    /// Stick inversion bitmask (bit0=LY, bit1=RY) from curves page byte 27
+    pub stick_inversion: u8,
     /// Vibration: (left, right)
     pub vibration: (u8, u8),
 }
@@ -75,6 +77,11 @@ pub fn read_from_controller(dev: &mut GipDevice) -> HwProfileCache {
                 let src = &mapping.raw[17..28];
                 paddle_region[..src.len()].copy_from_slice(src);
             }
+            // Read curves page for stick inversion
+            let stick_inversion = if let Some(curves) = profile::read_curves(dev, i, 0) {
+                if curves.raw.len() > 27 { curves.raw[27] } else { 0 }
+            } else { 0 };
+
             // Also read SlotB (shift page) for shift remaps
             let (shift_a, shift_ext) = if let Some(shift) = profile::read_mapping(dev, i, 1) {
                 (shift.remap_a, shift.remap_ext)
@@ -91,6 +98,7 @@ pub fn read_from_controller(dev: &mut GipDevice) -> HwProfileCache {
                 deadzones: mapping.deadzones,
                 color: mapping.color,
                 brightness: mapping.brightness,
+                stick_inversion,
                 vibration: mapping.vibration,
             };
         }

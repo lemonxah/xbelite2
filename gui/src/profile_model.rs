@@ -117,6 +117,14 @@ pub mod qobject {
         #[qinvokable]
         fn set_profile_brightness_value(self: Pin<&mut ProfileModel>, brightness: i32);
 
+        /// Set stick axis inversion. stick: 0=left, 1=right. axis: 0=X, 1=Y.
+        #[qinvokable]
+        fn set_stick_invert(self: Pin<&mut ProfileModel>, stick: i32, axis: i32, inverted: bool);
+
+        /// Get stick inversion state as JSON: {"lx":false,"ly":false,"rx":false,"ry":true}
+        #[qinvokable]
+        fn get_stick_inversion(self: &ProfileModel) -> QString;
+
         /// Get the current profile's remap data as JSON for the GUI to display.
         /// Returns: {"normal": {"A":"B","X":"Y",...}, "shift": {"A":"LB",...}, "color": "#rrggbb"}
         #[qinvokable]
@@ -214,6 +222,7 @@ enum Req {
     SetDeviceName { device_id: String, name: String },
     SetHwRemap { device_id: String, src: String, normal_dst: String, shift_dst: String },
     SetProfileBrightness { device_id: String, brightness: u8 },
+    SetStickInversion { device_id: String, inversion_mask: u8 },
     PersistHwChanges { device_id: String },
 }
 
@@ -643,6 +652,58 @@ impl qobject::ProfileModel {
             });
         }
         self.as_mut().set_profile_brightness(brightness);
+    }
+
+    fn set_stick_invert(self: Pin<&mut Self>, stick: i32, axis: i32, inverted: bool) {
+        if !self.rust().is_usb { return; }
+        let sp = sock_path();
+        let did = self.rust().device_id.clone();
+        if did.is_empty() { return; }
+
+        // Read current mask from cache
+        let hw = self.rust().hw_profile;
+        if hw < 1 || hw > 3 { return; }
+        let cache_dir = std::path::PathBuf::from("/var/cache/xbelite2");
+        let mut mask: u8 = xbelite2_gip::hw_profile::load_from(&cache_dir)
+            .map(|c| c.profiles[(hw - 1) as usize].stick_inversion)
+            .unwrap_or(0);
+
+        // bit0=LY, bit1=RY (from protocol)
+        // We extend: bit0=LY, bit1=RY, bit2=LX, bit3=RX (tentative for X axes)
+        let bit = match (stick, axis) {
+            (0, 1) => 0, // left Y
+            (1, 1) => 1, // right Y
+            (0, 0) => 2, // left X (tentative)
+            (1, 0) => 3, // right X (tentative)
+            _ => return,
+        };
+
+        if inverted {
+            mask |= 1 << bit;
+        } else {
+            mask &= !(1 << bit);
+        }
+
+        let _ = ipc(&sp, &Req::SetStickInversion { device_id: did, inversion_mask: mask });
+    }
+
+    fn get_stick_inversion(&self) -> QString {
+        let hw = self.rust().hw_profile;
+        if hw < 1 || hw > 3 {
+            return QString::from("{\"ly\":false,\"ry\":false,\"lx\":false,\"rx\":false}");
+        }
+        let cache_dir = std::path::PathBuf::from("/var/cache/xbelite2");
+        let mask = xbelite2_gip::hw_profile::load_from(&cache_dir)
+            .map(|c| c.profiles[(hw - 1) as usize].stick_inversion)
+            .unwrap_or(0);
+
+        let result = serde_json::json!({
+            "ly": mask & 0x01 != 0,
+            "ry": mask & 0x02 != 0,
+            "lx": mask & 0x04 != 0,
+            "rx": mask & 0x08 != 0,
+        });
+        QString::from(&result.to_string())
     }
 
     fn set_shift_button(self: Pin<&mut Self>, btn: QString) {
