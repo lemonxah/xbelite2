@@ -114,36 +114,30 @@ pub fn set_vibration(dev: &mut GipDevice, profile: usize, left: u8, right: u8) {
     commit(dev);
 }
 
-/// Remap buttons for a profile.
-/// `remaps` is a list of (from, to) pairs.
-/// Normal mode remaps go to SlotA, shift remaps go to SlotB.
+/// Remap buttons in normal mode (SlotA only).
 pub fn remap_buttons(dev: &mut GipDevice, profile: usize, remaps: &[(GipButton, GipButton)]) {
-    for slot in 0..2 {
-        let page = PROFILE_MAPPING_PAGES[profile][slot];
-        if let Some(raw) = read_page(dev, page, MAPPING_SIZE) {
-            let mut data = raw;
-            for &(from, to) in remaps {
-                let from_code = from.code();
-                let to_code = to.code();
-                if from_code >= 0x04 && from_code <= 0x07 {
-                    // Face button
-                    let idx = (from_code - 0x04) as usize;
-                    let off = if slot == 0 { OFF_REMAP_A } else { OFF_REMAP_B };
-                    data[off + idx] = to_code;
-                } else if from_code >= 0x08 && from_code <= 0x0F {
-                    // Extended button (shared across slots)
-                    let idx = (from_code - 0x08) as usize;
-                    data[OFF_REMAP_EXT + idx] = to_code;
-                }
+    let page = PROFILE_MAPPING_PAGES[profile][0]; // SlotA
+    if let Some(raw) = read_page(dev, page, MAPPING_SIZE) {
+        let mut data = raw;
+        for &(from, to) in remaps {
+            let from_code = from.code();
+            let to_code = to.code();
+            if from_code >= 0x04 && from_code <= 0x07 {
+                let idx = (from_code - 0x04) as usize;
+                data[OFF_REMAP_A + idx] = to_code;
+            } else if from_code >= 0x08 && from_code <= 0x0F {
+                let idx = (from_code - 0x08) as usize;
+                data[OFF_REMAP_EXT + idx] = to_code;
             }
-            data[OFF_FLAGS] = FLAGS_CUSTOM;
-            write_page(dev, page, &data);
         }
+        data[OFF_FLAGS] = FLAGS_CUSTOM;
+        write_page(dev, page, &data);
     }
     commit(dev);
 }
 
-/// Remap buttons only in shift mode (SlotB).
+/// Remap buttons in shift mode (SlotB page).
+/// On the SlotB page, face remaps are at OFF_REMAP_A (bytes 1-4), same position as SlotA.
 pub fn remap_shift(dev: &mut GipDevice, profile: usize, remaps: &[(GipButton, GipButton)]) {
     let page = PROFILE_MAPPING_PAGES[profile][1]; // SlotB
     if let Some(raw) = read_page(dev, page, MAPPING_SIZE) {
@@ -153,7 +147,7 @@ pub fn remap_shift(dev: &mut GipDevice, profile: usize, remaps: &[(GipButton, Gi
             let to_code = to.code();
             if from_code >= 0x04 && from_code <= 0x07 {
                 let idx = (from_code - 0x04) as usize;
-                data[OFF_REMAP_B + idx] = to_code;
+                data[OFF_REMAP_A + idx] = to_code; // SlotB uses same offset for face remaps
             } else if from_code >= 0x08 && from_code <= 0x0F {
                 let idx = (from_code - 0x08) as usize;
                 data[OFF_REMAP_EXT + idx] = to_code;

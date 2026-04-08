@@ -110,7 +110,7 @@ Compact input report, 17-byte payload:
 [10-11] right stick X (i16 LE)
 [12-13] right stick Y (i16 LE)
 [14]    paddles bitmask (bit0=UR, bit1=LR, bit2=UL, bit3=LL)
-[15]    unknown
+[15]    hardware profile number (0-3)
 [16]    trigger mode (constant 0x0a)
 ```
 
@@ -225,26 +225,41 @@ SlotA = normal mode. SlotB = shift/alternate mapping (activated by holding a shi
 ### Mapping Page (56 bytes)
 
 ```
-[0]     flags: 0x11 = default, 0x10 = customized
-[1-4]   face button remap: [A, B, X, Y] slots
-[5-8]   face button remap (shift): [A, B, X, Y] slots
-[9-16]  extended remap: [LB, RB, LT, RT, DUp, DDown, DLeft, DRight]
-[17-27] reserved (zeros)
-[28-31] dead zones: [LStick, RStick, LTrigger, RTrigger]
-[32-44] trigger and stick range config
+[0]     flags (bitmask):
+          bit 0 (0x01): shift modifier assigned
+          bit 2 (0x04): has button/paddle remaps
+          bit 4 (0x10): unmodified (default state)
+          Common values: 0x11=default, 0x00=modified, 0x01=shift, 0x04=remapped, 0x05=remap+keyboard
+[1-4]   face button remap: [A slot, B slot, X slot, Y slot]
+[5-8]   face button remap (shift layer): [A shift, B shift, X shift, Y shift]
+[9-16]  extended remap: 8 indexed slots (see below)
+[17-27] keyboard/special remap data:
+          [17]    keyboard remap source button GIP code (0 if none)
+          [18-27] additional remap metadata (zeros when unused)
+[28-31] dead zones: [LStick, RStick, LTrigger, RTrigger] (0-255)
+[32-44] trigger/stick ranges:
+          [32-33] LT max range (u16 LE, 0xFF=100%, 0xAB=67%)
+          [34-35] LT min range (u16 LE)
+          [36-37] padding
+          [38-39] RT max range (u16 LE)
+          [40-41] RT min range (u16 LE)
+          [42-43] padding
+          [44]    LED brightness (0-100, default 0x64=100)
 [45]    color flag: 0xFF = default (white), 0x00 = custom
 [46]    color R
 [47]    color G
 [48]    color B
-[49]    vibration left (0–100, stored value; 0x30 = 48 = default)
-[50]    vibration right (0–100)
-[51-55] reserved (zeros)
+[49]    vibration left (0-100, default 0x30=48)
+[50]    vibration right (0-100, default 0x30=48)
+[51-54] reserved
+[55]    keyboard mode flag (0x80 = keyboard key mapped, 0x00 = normal)
 ```
 
 #### Button Remap Codes
 
 | Code | Button |
 |------|--------|
+| 0x00 | None/Disabled |
 | 0x04 | A |
 | 0x05 | B |
 | 0x06 | X |
@@ -258,7 +273,23 @@ SlotA = normal mode. SlotB = shift/alternate mapping (activated by holding a shi
 | 0x0E | D-pad Left |
 | 0x0F | D-pad Right |
 
-Default mapping: each slot maps to itself (A=0x04, B=0x05, etc).
+Default face mapping: `[0x04, 0x05, 0x06, 0x07]` (A, B, X, Y).
+Default ext mapping: `[0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F]` (LB through DRight).
+
+#### Extended Remap Slots (bytes 9-16)
+
+The 8 ext slots are indexed positions, not fixed to specific buttons. The default mapping assigns each slot to its corresponding button, but any slot can hold any button code (or 0x00 for disabled).
+
+When a button is assigned as the **shift modifier**, it is removed from ext[] and everything shifts up to fill the gap. Slot 7 becomes 0x00 (NONE). The "missing" button is the shift button.
+
+Example: If LB is the shift modifier:
+- Default ext: `[LB, RB, LT, RT, DUp, DDown, DLeft, DRight]`
+- After shift: `[RB, LT, RT, DUp, DDown, DLeft, DRight, NONE]`
+- LB is removed, everything shifts up, flags gets bit 0 set (0x01)
+
+#### Paddle Remapping
+
+Paddles are remapped through the face[] array, not through separate entries. When a paddle is bound to a face button action, it appears as the GIP code in the corresponding face slot. The flags byte bit 2 (0x04) indicates paddle remaps are present.
 
 ### Curves Page (43 bytes)
 
@@ -268,7 +299,11 @@ Default mapping: each slot maps to itself (A=0x04, B=0x05, etc).
 [7-12] left stick Y curve
 [13-18] right stick X curve
 [19-24] right stick Y curve
-[25-42] reserved (zeros)
+[25-26] reserved
+[27]   stick inversion bitmask:
+         bit 0: left stick Y inverted
+         bit 1: right stick Y inverted
+[28-42] reserved (zeros)
 ```
 
 Each curve is 6 bytes: 3 control points as `[x1, y1, x2, y2, x3, y3]`.
@@ -278,12 +313,16 @@ Default linear curve: `[2B, 2B, 7F, 7F, BF, BF]` — points at (43,43), (127,127
 
 ## Init Sequence
 
-On USB connect, the controller sends a HELLO (0x02). The host should respond with:
+On USB connect, the controller sends a HELLO (0x02). The host should respond with the full init sequence (matches Linux kernel xpad.c):
 
-1. Power on: `05 20 <seq> 01 00`
-2. Init extended reports: `4D 10 <seq> 02 07 00`
+1. Power on: `05 20 00 01 00`
+2. BT→USB transition: `05 20 00 0F 06` (required for Elite 2 / Xbox One S)
+3. Extended reports: `4D 10 01 02 07 00` (enables paddles + profile in reports)
+4. LED on: `0A 20 00 03 00 01 14`
+5. Auth done: `06 20 00 02 01 00`
 
 After this the controller sends extended 0x20 (51-byte) and 0x0C (21-byte) input reports.
+The keepalive (rumble stop command `09 00 00 09 00 0F 00 00 00 00 FF 00 EB`) should be sent every ~2 seconds to prevent HELLO re-sends.
 
 ## Write Sequence
 

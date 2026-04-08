@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 /// GIP button remap codes (hardware-level, from protocol RE)
+/// Codes 0x04-0x0F confirmed from USB captures.
+/// Codes 0x10-0x17 are tentative — need a capture with stick/paddle remaps to confirm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum GipButton {
@@ -16,6 +18,12 @@ pub enum GipButton {
     DDown = 0x0D,
     DLeft = 0x0E,
     DRight = 0x0F,
+    LStick = 0x10,
+    RStick = 0x11,
+    P1 = 0x12,
+    P2 = 0x13,
+    P3 = 0x14,
+    P4 = 0x15,
 }
 
 impl GipButton {
@@ -33,6 +41,12 @@ impl GipButton {
             0x0D => Some(Self::DDown),
             0x0E => Some(Self::DLeft),
             0x0F => Some(Self::DRight),
+            0x10 => Some(Self::LStick),
+            0x11 => Some(Self::RStick),
+            0x12 => Some(Self::P1),
+            0x13 => Some(Self::P2),
+            0x14 => Some(Self::P3),
+            0x15 => Some(Self::P4),
             _ => None,
         }
     }
@@ -51,6 +65,12 @@ impl GipButton {
             "ddown" | "down" => Some(Self::DDown),
             "dleft" | "left" => Some(Self::DLeft),
             "dright" | "right" => Some(Self::DRight),
+            "lstick" | "l stick" => Some(Self::LStick),
+            "rstick" | "r stick" => Some(Self::RStick),
+            "p1" => Some(Self::P1),
+            "p2" => Some(Self::P2),
+            "p3" => Some(Self::P3),
+            "p4" => Some(Self::P4),
             _ => None,
         }
     }
@@ -69,6 +89,12 @@ impl GipButton {
             Self::DDown => "DDown",
             Self::DLeft => "DLeft",
             Self::DRight => "DRight",
+            Self::LStick => "LStick",
+            Self::RStick => "RStick",
+            Self::P1 => "P1",
+            Self::P2 => "P2",
+            Self::P3 => "P3",
+            Self::P4 => "P4",
         }
     }
 
@@ -125,9 +151,12 @@ pub struct ProfileMapping {
     pub remap_ext: [u8; 8],
     pub deadzones: [u8; 4], // [LStick, RStick, LTrigger, RTrigger]
     pub color: Option<(u8, u8, u8)>, // None = default white
+    pub brightness: u8, // 0-100, byte 44
     pub vibration: (u8, u8),
     pub raw: Vec<u8>,
 }
+
+pub const OFF_BRIGHTNESS: usize = 44;
 
 impl ProfileMapping {
     pub fn from_raw(data: &[u8]) -> Option<Self> {
@@ -149,6 +178,7 @@ impl ProfileMapping {
             ],
             deadzones: [data[28], data[29], data[30], data[31]],
             color,
+            brightness: data[OFF_BRIGHTNESS],
             vibration: (data[OFF_VIBRATION], data[OFF_VIBRATION + 1]),
             raw: data.to_vec(),
         })

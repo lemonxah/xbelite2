@@ -34,7 +34,8 @@ ApplicationWindow {
         id: colorDialog
         title: "Profile LED Color"
         onAccepted: {
-            profileModel.set_profile_color_hex(selectedColor.toString())
+            var c = selectedColor.toString()
+            profileModel.set_profile_color_hex(c)
         }
     }
 
@@ -150,9 +151,8 @@ ApplicationWindow {
                             enabled: profileModel.is_usb
                             cursorShape: profileModel.is_usb ? Qt.PointingHandCursor : Qt.ArrowCursor
                             onClicked: {
-                                if (profileModel.profile_color !== "default") {
+                                if (profileModel.profile_color !== "default")
                                     colorDialog.selectedColor = profileModel.profile_color
-                                }
                                 colorDialog.open()
                             }
                         }
@@ -161,6 +161,21 @@ ApplicationWindow {
                     Label {
                         text: profileModel.profile_color === "default" ? "Default" : profileModel.profile_color
                         font.pixelSize: 10
+                        color: "#888"
+                    }
+
+                    Slider {
+                        id: brightnessSlider
+                        from: 0; to: 100; stepSize: 1
+                        value: profileModel.profile_brightness
+                        Layout.preferredWidth: 80
+                        enabled: profileModel.is_usb
+                        onMoved: profileModel.set_profile_brightness_value(Math.round(value))
+                    }
+
+                    Label {
+                        text: Math.round(brightnessSlider.value) + "%"
+                        font.pixelSize: 9
                         color: "#888"
                     }
                 }

@@ -94,6 +94,34 @@ pub enum IpcRequest {
         device_id: String,
         intensities: [u8; 4],
     },
+    /// Set hardware profile LED color (USB only)
+    SetProfileColor {
+        device_id: String,
+        r: u8,
+        g: u8,
+        b: u8,
+    },
+    /// Set controller device name (USB only)
+    SetDeviceName {
+        device_id: String,
+        name: String,
+    },
+    /// Remap a button on the current HW profile (USB only)
+    SetHwRemap {
+        device_id: String,
+        src: String,
+        normal_dst: String,
+        shift_dst: String,
+    },
+    /// Set hardware profile LED brightness (USB only, 0-100)
+    SetProfileBrightness {
+        device_id: String,
+        brightness: u8,
+    },
+    /// Persist all pending hardware changes to controller flash
+    PersistHwChanges {
+        device_id: String,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -122,9 +150,13 @@ pub struct DeviceStatus {
     pub active_profile: usize,
     pub connected: bool,
     pub is_usb: bool,
+    #[serde(default)]
+    pub profile_color: String,  // "#rrggbb" or "default"
+    #[serde(default = "default_brightness")]
+    pub profile_brightness: u8, // 0-100
     // Live input state
-    pub buttons: u16,      // Bitmask of pressed buttons
-    pub paddles: u8,       // Bitmask of pressed paddles
+    pub buttons: u16,
+    pub paddles: u8,
     pub left_stick_x: i16,
     pub left_stick_y: i16,
     pub right_stick_x: i16,
@@ -132,3 +164,5 @@ pub struct DeviceStatus {
     pub left_trigger: u16,
     pub right_trigger: u16,
 }
+
+fn default_brightness() -> u8 { 100 }

@@ -9,53 +9,175 @@ Item {
 
     // GIP button codes (hardware-level)
     readonly property var gipCodes: ({
-        "A": 0x04, "B": 0x05, "X": 0x06, "Y": 0x07,
-        "LB": 0x08, "RB": 0x09, "LT": 0x0A, "RT": 0x0B,
-        "DUp": 0x0C, "DDown": 0x0D, "DLeft": 0x0E, "DRight": 0x0F
-    })
+            "A": 0x04,
+            "B": 0x05,
+            "X": 0x06,
+            "Y": 0x07,
+            "LB": 0x08,
+            "RB": 0x09,
+            "LT": 0x0A,
+            "RT": 0x0B,
+            "DUp": 0x0C,
+            "DDown": 0x0D,
+            "DLeft": 0x0E,
+            "DRight": 0x0F,
+            "L Stick": 0x10,
+            "R Stick": 0x11,
+            "P1": 0x12,
+            "P2": 0x13,
+            "P3": 0x14,
+            "P4": 0x15
+        })
 
-    readonly property var gipNames: [
-        "A", "B", "X", "Y", "LB", "RB", "LT", "RT",
-        "DUp", "DDown", "DLeft", "DRight"
-    ]
+    // Buttons that can be remapped — face, bumpers, triggers, dpad, sticks
+    // Paddles are hardware-linked to face buttons in the profile, not individually remappable
+    // View, Menu, Xbox are not remappable
+    readonly property var remappableButtons: ({
+            "A": true,
+            "B": true,
+            "X": true,
+            "Y": true,
+            "LB": true,
+            "RB": true,
+            "LT": true,
+            "RT": true,
+            "DUp": true,
+            "DDown": true,
+            "DLeft": true,
+            "DRight": true,
+            "L Stick": true,
+            "R Stick": true
+        })
 
-    readonly property var allButtonNames: [
-        "A", "B", "X", "Y", "LB", "RB",
-        "View", "Menu", "Xbox",
-        "L Stick", "R Stick",
-        "DUp", "DDown", "DLeft", "DRight",
-        "P1", "P2", "P3", "P4"
-    ]
+    // Target buttons for remapping (what a button can be remapped TO)
+    // Paddles map to existing controller buttons, not independent actions
+    readonly property var remapTargets: ["A", "B", "X", "Y", "LB", "RB", "LT", "RT", "DUp", "DDown", "DLeft", "DRight", "L Stick", "R Stick"]
+
+    // All buttons for display purposes
+    readonly property var allButtonNames: ["A", "B", "X", "Y", "LB", "RB", "View", "Menu", "Xbox", "L Stick", "R Stick", "DUp", "DDown", "DLeft", "DRight", "P1", "P2", "P3", "P4"]
 
     function isBtnPressed(name) {
-        var b = profileModel.live_buttons
-        var p = profileModel.live_paddles
-        switch(name) {
-            case "A": return (b & (1<<0)) !== 0
-            case "B": return (b & (1<<1)) !== 0
-            case "X": return (b & (1<<2)) !== 0
-            case "Y": return (b & (1<<3)) !== 0
-            case "LB": return (b & (1<<4)) !== 0
-            case "RB": return (b & (1<<5)) !== 0
-            case "View": return (b & (1<<6)) !== 0
-            case "Menu": return (b & (1<<7)) !== 0
-            case "Xbox": return (b & (1<<8)) !== 0
-            case "L Stick": return (b & (1<<9)) !== 0
-            case "R Stick": return (b & (1<<10)) !== 0
-            case "DUp": return (b & (1<<11)) !== 0
-            case "DDown": return (b & (1<<12)) !== 0
-            case "DLeft": return (b & (1<<13)) !== 0
-            case "DRight": return (b & (1<<14)) !== 0
-            case "P1": return (p & 0x01) !== 0
-            case "P2": return (p & 0x02) !== 0
-            case "P3": return (p & 0x04) !== 0
-            case "P4": return (p & 0x08) !== 0
+        var b = profileModel.live_buttons;
+        var p = profileModel.live_paddles;
+        switch (name) {
+        case "A":
+            return (b & (1 << 0)) !== 0;
+        case "B":
+            return (b & (1 << 1)) !== 0;
+        case "X":
+            return (b & (1 << 2)) !== 0;
+        case "Y":
+            return (b & (1 << 3)) !== 0;
+        case "LB":
+            return (b & (1 << 4)) !== 0;
+        case "RB":
+            return (b & (1 << 5)) !== 0;
+        case "View":
+            return (b & (1 << 6)) !== 0;
+        case "Menu":
+            return (b & (1 << 7)) !== 0;
+        case "Xbox":
+            return (b & (1 << 8)) !== 0;
+        case "L Stick":
+            return (b & (1 << 9)) !== 0;
+        case "R Stick":
+            return (b & (1 << 10)) !== 0;
+        case "DUp":
+            return (b & (1 << 11)) !== 0;
+        case "DDown":
+            return (b & (1 << 12)) !== 0;
+        case "DLeft":
+            return (b & (1 << 13)) !== 0;
+        case "DRight":
+            return (b & (1 << 14)) !== 0;
+        case "P1":
+            return (p & 0x01) !== 0;
+        case "P2":
+            return (p & 0x02) !== 0;
+        case "P3":
+            return (p & 0x04) !== 0;
+        case "P4":
+            return (p & 0x08) !== 0;
         }
-        return false
+        return false;
     }
 
     property string selectedButton: ""
     property bool shiftMode: false
+    property int remapVersion: 0 // bumped to force UI rebind
+
+    property string shiftButton: "" // Which button is the shift modifier (from hw_profile)
+
+    onSelectedButtonChanged: {
+        updateDropdowns();
+        // Sync shift modifier checkbox with actual shift button
+        shiftModifierCheck.checked = (selectedButton !== "" && selectedButton === shiftButton);
+    }
+    property var hwRemaps: ({})  // parsed from get_hw_profile_info()
+
+    // Refresh remap display when profile changes or on load
+    function refreshRemaps() {
+        try {
+            var info = JSON.parse(profileModel.get_hw_profile_info());
+            hwRemaps = info;
+            shiftButton = info.shift_button || "";
+        } catch (e) {
+            hwRemaps = {};
+            shiftButton = "";
+        }
+        remapVersion++;
+        updateDropdowns();
+    }
+
+    // Get the normal remap for a button (empty string if default)
+    function getNormalRemap(btnName) {
+        var _v = remapVersion; // force dependency
+        if (hwRemaps && hwRemaps.normal && hwRemaps.normal[btnName])
+            return hwRemaps.normal[btnName];
+        return "";
+    }
+
+    // Get the shift remap for a button
+    function getShiftRemap(btnName) {
+        var _v = remapVersion; // force dependency
+        if (hwRemaps && hwRemaps.shift && hwRemaps.shift[btnName])
+            return hwRemaps.shift[btnName];
+        return "";
+    }
+
+    Timer {
+        id: refreshTimer
+        interval: 1000 // ms — confirm from daemon cache after write
+        repeat: false
+        onTriggered: refreshRemaps()
+    }
+
+    Connections {
+        target: profileModel
+        function onHw_profileChanged() {
+            refreshRemaps();
+        }
+        function onIs_usbChanged() {
+            refreshRemaps();
+        }
+        function onConnectedChanged() {
+            refreshRemaps();
+        }
+    }
+
+    // Set dropdowns to current remap values when a button is selected
+    function updateDropdowns() {
+        if (selectedButton === "")
+            return;
+        var normalVal = getNormalRemap(selectedButton);
+        var shiftVal = getShiftRemap(selectedButton);
+
+        // Find index in remapTargets (0 = Default, 1+ = button name)
+        normalTarget.currentIndex = normalVal === "" ? 0 : remapTargets.indexOf(normalVal) + 1;
+        shiftTarget.currentIndex = shiftVal === "" ? 0 : remapTargets.indexOf(shiftVal) + 1;
+    }
+
+    Component.onCompleted: refreshRemaps()
 
     // Layout: left labels | controller image | right labels
     RowLayout {
@@ -76,33 +198,55 @@ Item {
             }
 
             Repeater {
-                model: ["LB", "View", "L Stick", "DUp", "DDown", "DLeft", "DRight", "P3", "P4"]
+                model: ["LB", "View", "DUp", "DDown", "DLeft", "DRight", "L Stick", "P3", "P4"]
                 SideBtn {
                     label: modelData
                     sel: canEdit && selectedButton === modelData
                     pressed: isBtnPressed(modelData)
                     accent: (modelData === "P3" || modelData === "P4") ? "#e67e22" : "#ccc"
-                    onClicked: if (canEdit) selectedButton = modelData
+                    onClicked: if (canEdit)
+                        selectedButton = modelData
                     clickable: canEdit
-                    remappable: modelData in gipCodes
+                    remappable: modelData in remappableButtons
+                    normalRemap: getNormalRemap(modelData)
+                    shiftRemap: getShiftRemap(modelData)
                 }
             }
         }
 
-        // Center: controller image
+        // Center: Xbox button + controller image
         Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
 
-            Image {
-                id: ctrlImg
-                source: "qrc:/assets/elite2.png"
-                anchors.centerIn: parent
-                width: parent.width
-                height: parent.height
-                fillMode: Image.PreserveAspectFit
-                smooth: true
-                opacity: 0.9
+            ColumnLayout {
+                anchors.fill: parent
+                spacing: 4
+
+                // Xbox button at top center
+                SideBtn {
+                    Layout.alignment: Qt.AlignHCenter
+                    label: "Xbox"
+                    sel: canEdit && selectedButton === "Xbox"
+                    pressed: isBtnPressed("Xbox")
+                    accent: "#107c10"
+                    onClicked: if (canEdit)
+                        selectedButton = "Xbox"
+                    clickable: canEdit
+                    remappable: false
+                    normalRemap: getNormalRemap("Xbox")
+                    shiftRemap: getShiftRemap("Xbox")
+                }
+
+                Image {
+                    id: ctrlImg
+                    source: "qrc:/assets/elite2.png"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    fillMode: Image.PreserveAspectFit
+                    smooth: true
+                    opacity: 0.9
+                }
             }
         }
 
@@ -118,55 +262,126 @@ Item {
             }
 
             Repeater {
-                model: ["RB", "Menu", "Xbox", "Y", "B", "A", "X", "R Stick", "P1", "P2"]
+                model: ["RB", "Menu", "A", "B", "X", "Y", "R Stick", "P1", "P2"]
                 SideBtn {
                     label: modelData
                     sel: canEdit && selectedButton === modelData
                     pressed: isBtnPressed(modelData)
                     accent: {
-                        switch(modelData) {
-                            case "Y": return "#c8b517"
-                            case "B": return "#e74c3c"
-                            case "A": return "#107c10"
-                            case "X": return "#0078d4"
-                            case "Xbox": return "#107c10"
-                            case "P1": case "P2": return "#e67e22"
-                            default: return "#ccc"
+                        switch (modelData) {
+                        case "Y":
+                            return "#c8b517";
+                        case "B":
+                            return "#e74c3c";
+                        case "A":
+                            return "#107c10";
+                        case "X":
+                            return "#0078d4";
+                        case "P1":
+                        case "P2":
+                            return "#e67e22";
+                        default:
+                            return "#ccc";
                         }
                     }
-                    onClicked: if (canEdit) selectedButton = modelData
+                    onClicked: if (canEdit)
+                        selectedButton = modelData
                     clickable: canEdit
-                    remappable: modelData in gipCodes
+                    remappable: modelData in remappableButtons
+                    normalRemap: getNormalRemap(modelData)
+                    shiftRemap: getShiftRemap(modelData)
                 }
             }
         }
     }
 
     // Remap bar at bottom
+    readonly property bool selectedIsRemappable: selectedButton in remappableButtons
     Rectangle {
-        anchors.bottom: parent.bottom; anchors.left: parent.left; anchors.right: parent.right
-        height: (selectedButton !== "" && canEdit && selectedButton in gipCodes) ? 55 : 0
-        color: "#111"; visible: height > 0; z: 10
+        anchors.bottom: parent.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        height: (selectedButton !== "" && canEdit) ? 60 : 0
+        color: "#111"
+        visible: height > 0
+        z: 10
 
         RowLayout {
-            anchors.fill: parent; anchors.margins: 8; spacing: 12
+            anchors.fill: parent
+            anchors.margins: 8
+            spacing: 12
 
             Label {
-                text: "Remap <b>" + selectedButton + "</b> →"
-                color: "#e0e0e0"; font.pixelSize: 13; textFormat: Text.RichText
+                text: {
+                    if (!selectedIsRemappable)
+                        return "<b>" + selectedButton + "</b> — not remappable";
+                    var isPaddle = selectedButton.startsWith("P");
+                    if (isPaddle)
+                        return "Bind <b>" + selectedButton + "</b> to →";
+                    return "Remap <b>" + selectedButton + "</b> →";
+                }
+                color: selectedIsRemappable ? "#e0e0e0" : "#888"
+                font.pixelSize: 13
+                textFormat: Text.RichText
+            }
+
+            // Shift modifier checkbox
+            CheckBox {
+                id: shiftModifierCheck
+                visible: selectedIsRemappable
+                text: "SHIFT MODIFIER"
+                checked: false
+                contentItem: Text {
+                    text: parent.text
+                    color: parent.checked ? "#e67e22" : "#888"
+                    font.pixelSize: 11
+                    font.bold: parent.checked
+                    leftPadding: parent.indicator.width + 6
+                    verticalAlignment: Text.AlignVCenter
+                }
+                indicator: Rectangle {
+                    width: 16
+                    height: 16
+                    radius: 3
+                    color: parent.checked ? "#e67e22" : "#333"
+                    border.color: parent.checked ? "#f39c12" : "#555"
+                    x: 0
+                    anchors.verticalCenter: parent.verticalCenter
+                    Text {
+                        anchors.centerIn: parent
+                        text: parent.parent.checked ? "S" : ""
+                        color: "white"
+                        font.pixelSize: 10
+                        font.bold: true
+                    }
+                }
             }
 
             // Normal mode remap
             ColumnLayout {
                 spacing: 2
-                Label { text: "Normal"; color: "#888"; font.pixelSize: 9 }
+                visible: selectedIsRemappable && !shiftModifierCheck.checked
+                Label {
+                    text: "Normal"
+                    color: "#888"
+                    font.pixelSize: 9
+                }
                 ComboBox {
-                    id: normalTarget; Layout.preferredWidth: 120
-                    model: ["(Default)"].concat(gipNames)
-                    background: Rectangle { color: "#222"; radius: 4; border.color: "#444" }
+                    id: normalTarget
+                    Layout.preferredWidth: 120
+                    model: ["(Default)"].concat(remapTargets)
+                    enabled: !shiftModifierCheck.checked
+                    background: Rectangle {
+                        color: "#222"
+                        radius: 4
+                        border.color: "#444"
+                    }
                     contentItem: Text {
-                        text: normalTarget.displayText; color: "#e0e0e0"
-                        leftPadding: 8; verticalAlignment: Text.AlignVCenter; font.pixelSize: 12
+                        text: normalTarget.displayText
+                        color: "#e0e0e0"
+                        leftPadding: 8
+                        verticalAlignment: Text.AlignVCenter
+                        font.pixelSize: 12
                     }
                 }
             }
@@ -174,65 +389,145 @@ Item {
             // Shift mode remap
             ColumnLayout {
                 spacing: 2
-                Label { text: "Shift"; color: "#9b59b6"; font.pixelSize: 9 }
+                visible: selectedIsRemappable && !shiftModifierCheck.checked
+                Label {
+                    text: "Shift"
+                    color: "#9b59b6"
+                    font.pixelSize: 9
+                }
                 ComboBox {
-                    id: shiftTarget; Layout.preferredWidth: 120
-                    model: ["(Default)"].concat(gipNames)
-                    background: Rectangle { color: "#1a1028"; radius: 4; border.color: "#6c3483" }
+                    id: shiftTarget
+                    Layout.preferredWidth: 120
+                    model: ["(Default)"].concat(remapTargets)
+                    enabled: !shiftModifierCheck.checked
+                    background: Rectangle {
+                        color: "#1a1028"
+                        radius: 4
+                        border.color: "#6c3483"
+                    }
                     contentItem: Text {
-                        text: shiftTarget.displayText; color: "#d2b4de"
-                        leftPadding: 8; verticalAlignment: Text.AlignVCenter; font.pixelSize: 12
+                        text: shiftTarget.displayText
+                        color: "#d2b4de"
+                        leftPadding: 8
+                        verticalAlignment: Text.AlignVCenter
+                        font.pixelSize: 12
                     }
                 }
             }
 
+            // Shift modifier info
+            Label {
+                visible: selectedIsRemappable && shiftModifierCheck.checked
+                text: "Hold <b>" + selectedButton + "</b> to activate shift remaps"
+                color: "#e67e22"
+                font.pixelSize: 12
+                textFormat: Text.RichText
+            }
+
             Button {
-                text: "Apply"
+                visible: selectedIsRemappable
+                text: shiftModifierCheck.checked ? "Set Shift" : "Apply"
                 onClicked: {
-                    var src = selectedButton
-                    var normalBtn = normalTarget.currentIndex === 0 ? src : gipNames[normalTarget.currentIndex - 1]
-                    var shiftBtn = shiftTarget.currentIndex === 0 ? src : gipNames[shiftTarget.currentIndex - 1]
-                    profileModel.set_hw_remap(src, normalBtn, shiftBtn)
+                    if (shiftModifierCheck.checked) {
+                        profileModel.set_shift_button(selectedButton);
+                    } else {
+                        var src = selectedButton;
+                        var normalBtn = normalTarget.currentIndex === 0 ? src : remapTargets[normalTarget.currentIndex - 1];
+                        var shiftBtn = shiftTarget.currentIndex === 0 ? src : remapTargets[shiftTarget.currentIndex - 1];
+                        profileModel.set_hw_remap(src, normalBtn, shiftBtn);
+                        // Optimistically update local remap display
+                        if (!hwRemaps.normal)
+                            hwRemaps.normal = {};
+                        if (!hwRemaps.shift)
+                            hwRemaps.shift = {};
+                        if (normalBtn === src) {
+                            delete hwRemaps.normal[src];
+                        } else {
+                            hwRemaps.normal[src] = normalBtn;
+                        }
+                        if (shiftBtn === src) {
+                            delete hwRemaps.shift[src];
+                        } else {
+                            hwRemaps.shift[src] = shiftBtn;
+                        }
+                        remapVersion++;
+                    }
+                    // Also refresh from cache after daemon finishes
+                    refreshTimer.start();
                 }
-                background: Rectangle { color: parent.hovered ? "#1a8c1a" : "#107c10"; radius: 4 }
-                contentItem: Text { text: parent.text; color: "white"; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                background: Rectangle {
+                    color: parent.hovered ? (shiftModifierCheck.checked ? "#f39c12" : "#1a8c1a") : (shiftModifierCheck.checked ? "#e67e22" : "#107c10")
+                    radius: 4
+                }
+                contentItem: Text {
+                    text: parent.text
+                    color: "white"
+                    font.bold: true
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
             }
 
             Button {
+                visible: selectedIsRemappable
                 text: "Reset"
-                onClicked: profileModel.set_hw_remap(selectedButton, selectedButton, selectedButton)
-                background: Rectangle { color: parent.hovered ? "#e74c3c" : "#333"; radius: 4 }
-                contentItem: Text { text: parent.text; color: "#ccc"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                onClicked: {
+                    shiftModifierCheck.checked = false;
+                    profileModel.set_hw_remap(selectedButton, selectedButton, selectedButton);
+                    refreshTimer.start();
+                }
+                background: Rectangle {
+                    color: parent.hovered ? "#e74c3c" : "#333"
+                    radius: 4
+                }
+                contentItem: Text {
+                    text: parent.text
+                    color: "#ccc"
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
             }
 
-            Item { Layout.fillWidth: true }
+            Item {
+                Layout.fillWidth: true
+            }
         }
     }
 
     // Overlay messages
     Rectangle {
         anchors.centerIn: parent
-        width: 320; height: 40; radius: 8
-        color: "#222"; border.color: "#555"
-        visible: isPassthrough; z: 20
+        width: 320
+        height: 40
+        radius: 8
+        color: "#222"
+        border.color: "#555"
+        visible: isPassthrough
+        z: 20
 
         Label {
             anchors.centerIn: parent
-            text: "Profile 0 - Passthrough (no remapping)"
-            color: "#888"; font.pixelSize: 13
+            text: "Profile 0 - Passthrough (paddles as independent buttons)"
+            color: "#888"
+            font.pixelSize: 13
         }
     }
 
     Rectangle {
         anchors.centerIn: parent
-        width: 360; height: 40; radius: 8
-        color: "#1a1028"; border.color: "#6c3483"
-        visible: !isPassthrough && !profileModel.is_usb; z: 20
+        width: 360
+        height: 40
+        radius: 8
+        color: "#1a1028"
+        border.color: "#6c3483"
+        visible: !isPassthrough && !profileModel.is_usb
+        z: 20
 
         Label {
             anchors.centerIn: parent
             text: "Connect via USB to edit hardware remaps"
-            color: "#9b59b6"; font.pixelSize: 13
+            color: "#9b59b6"
+            font.pixelSize: 13
         }
     }
 
@@ -244,34 +539,61 @@ Item {
         property bool clickable: true
         property bool remappable: true
         property color accent: "#ccc"
-        signal clicked()
+        property string normalRemap: ""
+        property string shiftRemap: ""
+        signal clicked
 
-        width: 105; height: 32; radius: 4
+        width: 105
+        height: normalRemap !== "" || shiftRemap !== "" ? 44 : 32
+        radius: 4
         color: pressed ? accent : (sel ? "#533483" : (ma.containsMouse && clickable ? "#222" : "#111"))
-        border.color: pressed ? accent : (sel ? "#7b4fbf" : "#333")
-        border.width: (sel || pressed) ? 2 : 1
+        border.color: pressed ? accent : (sel ? "#7b4fbf" : (normalRemap !== "" || shiftRemap !== "" ? "#0078d4" : "#333"))
+        border.width: (sel || pressed || normalRemap !== "" || shiftRemap !== "") ? 2 : 1
         opacity: clickable ? 1.0 : 0.6
 
-        Row {
-            anchors.centerIn: parent; spacing: 3
-            Label {
-                text: parent.parent.label
-                color: parent.parent.pressed ? "#000" : parent.parent.accent
-                font.pixelSize: 11; font.bold: true
+        Column {
+            anchors.centerIn: parent
+            spacing: 1
+
+            Row {
+                anchors.horizontalCenter: parent.horizontalCenter
+                spacing: 3
+                Label {
+                    text: label
+                    color: pressed ? "#000" : accent
+                    font.pixelSize: 11
+                    font.bold: true
+                }
             }
-            // Show a small indicator if button is remappable (GIP) vs display-only
-            Rectangle {
-                width: 4; height: 4; radius: 2
-                color: "#0078d4"
-                visible: parent.parent.remappable && parent.parent.clickable
-                anchors.verticalCenter: parent.verticalCenter
+
+            // Show remap info below the label
+            Row {
+                anchors.horizontalCenter: parent.horizontalCenter
+                spacing: 4
+                visible: normalRemap !== "" || shiftRemap !== ""
+
+                Label {
+                    text: normalRemap !== "" ? "→" + normalRemap : ""
+                    color: pressed ? "#000" : "#4da6ff"
+                    font.pixelSize: 8
+                    visible: normalRemap !== ""
+                }
+                Label {
+                    text: shiftRemap !== "" ? "S→" + shiftRemap : ""
+                    color: pressed ? "#000" : "#9b59b6"
+                    font.pixelSize: 8
+                    visible: shiftRemap !== ""
+                }
             }
         }
 
         MouseArea {
-            id: ma; anchors.fill: parent; hoverEnabled: true
+            id: ma
+            anchors.fill: parent
+            hoverEnabled: true
             cursorShape: clickable ? Qt.PointingHandCursor : Qt.ArrowCursor
-            onClicked: if (clickable) parent.clicked()
+            onClicked: if (clickable)
+                parent.clicked()
         }
     }
 
@@ -280,8 +602,12 @@ Item {
         property string label: ""
         property real fillLevel: 0.0
 
-        width: 105; height: 32; radius: 4
-        color: "#111"; border.color: "#333"; clip: true
+        width: 105
+        height: 32
+        radius: 4
+        color: "#111"
+        border.color: "#333"
+        clip: true
 
         Rectangle {
             anchors.left: parent.left
@@ -296,7 +622,9 @@ Item {
         Label {
             anchors.centerIn: parent
             text: label + " " + Math.round(fillLevel * 100) + "%"
-            color: "#e0e0e0"; font.pixelSize: 10; font.bold: true
+            color: "#e0e0e0"
+            font.pixelSize: 10
+            font.bold: true
         }
     }
 }

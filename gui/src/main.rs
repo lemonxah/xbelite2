@@ -4,7 +4,7 @@ use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
 fn main() {
     // Set default style for QtQuick.Controls
-    std::env::set_var("QT_QUICK_CONTROLS_STYLE", "Basic");
+    std::env::set_var("QT_QUICK_CONTROLS_STYLE", "Fusion");
 
     let mut app = QGuiApplication::new();
     let mut engine = QQmlApplicationEngine::new();

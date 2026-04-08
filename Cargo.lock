@@ -845,6 +845,7 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "libc",
+ "log",
  "serde",
  "serde_json",
  "xbelite2-gip",

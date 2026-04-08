@@ -2,7 +2,7 @@
 
 Linux driver and configuration tool for the Xbox Elite Wireless Controller Series 2.
 
-![Xbox Elite Series 2](docs/elite2.png)
+![Xbox Elite Series 2 - Profile Configurator](docs/gui-screenshot.png)
 
 ## What this does
 

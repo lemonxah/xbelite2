@@ -39,6 +39,7 @@ struct ControllerState {
     config: DeviceConfig,
     prev_state: GamepadState,
     device_id: String,
+    controller_name: String,
     hw_cache: HwProfileCache,
 }
 
@@ -74,6 +75,8 @@ pub fn run(running: Arc<AtomicBool>) -> Result<()> {
 
     let mut last_scan = std::time::Instant::now();
     let scan_interval = std::time::Duration::from_secs(5);
+    let mut last_keepalive = std::time::Instant::now();
+    let keepalive_interval = std::time::Duration::from_secs(2);
 
     while running.load(Ordering::Relaxed) {
         let mut pollfds: Vec<libc::pollfd> = Vec::new();
@@ -147,6 +150,14 @@ pub fn run(running: Arc<AtomicBool>) -> Result<()> {
         }
 
         handle_ipc(&listener, &mut controllers);
+
+        // Send USB keepalive every 2 seconds to prevent HELLO spam
+        if last_keepalive.elapsed() >= keepalive_interval {
+            for ctrl in controllers.values_mut() {
+                send_usb_keepalive(ctrl);
+            }
+            last_keepalive = std::time::Instant::now();
+        }
 
         if controllers.is_empty() && last_scan.elapsed() >= scan_interval {
             discover_and_attach(&mut controllers)?;
@@ -247,6 +258,7 @@ fn setup_hidraw_controller(device: hidraw::HidrawDevice, idx: usize) -> Result<C
         config,
         prev_state: GamepadState::default(),
         device_id,
+        controller_name: "Elite 2 (BT)".to_string(),
         hw_cache,
     })
 }
@@ -271,6 +283,7 @@ fn setup_misc_controller(path: &std::path::Path, idx: usize) -> Result<Controlle
         config,
         prev_state: GamepadState::default(),
         device_id,
+        controller_name: "Elite 2 (BT)".to_string(),
         hw_cache,
     })
 }
@@ -278,22 +291,36 @@ fn setup_misc_controller(path: &std::path::Path, idx: usize) -> Result<Controlle
 fn setup_usb_misc_controller(path: &std::path::Path, idx: usize) -> Result<ControllerState> {
     let device_id = format!("usb:{}", path.display());
 
-    let file = OpenOptions::new()
+    let mut file = OpenOptions::new()
         .read(true)
         .write(true)
         .open(path)
         .with_context(|| format!("open {}", path.display()))?;
 
-    // Read hardware profiles from controller and cache them
+    // Read device name and hardware profiles from controller and cache them
+    let mut controller_name = "Elite 2 (USB)".to_string();
     let hw_cache = match xbelite2_gip::transport::GipDevice::open_usb() {
         Ok(mut gip) => {
             gip.unlock();
+            // Read device name
+            if let Some(name) = xbelite2_gip::name::read(&mut gip) {
+                log::info!("Controller name: \"{name}\"");
+                controller_name = name;
+            }
+            // Read all 3 profiles
             let cache = hw_profile::read_from_controller(&mut gip);
+            for (i, p) in cache.profiles.iter().enumerate() {
+                let color = match p.color {
+                    Some((r, g, b)) => format!("#{r:02x}{g:02x}{b:02x}"),
+                    None => "default".to_string(),
+                };
+                let remapped = p.has_any_remap();
+                let paddles = p.has_paddle_remaps();
+                log::info!("Profile {}: color={color} remapped={remapped} paddle_remaps={paddles}", i + 1);
+            }
             let cache_dir = std::path::PathBuf::from("/var/cache/xbelite2");
             if let Err(e) = hw_profile::save_to(&cache, &cache_dir) {
                 log::warn!("Failed to save hw profile cache: {e}");
-            } else {
-                log::info!("Cached {} hardware profiles", cache.profiles.len());
             }
             cache
         }
@@ -306,12 +333,54 @@ fn setup_usb_misc_controller(path: &std::path::Path, idx: usize) -> Result<Contr
     let gamepad = VirtualGamepad::new(idx)?;
     let config = DeviceConfig::default();
 
+    // Try to read initial hw_profile from the first few 0x0C frames
+    let mut initial_profile: u8 = 0;
+    {
+        use std::io::Read;
+        // Set non-blocking temporarily
+        let fd = file.as_raw_fd();
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+        // Wait briefly for controller to start sending reports
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let mut buf = [0u8; 512];
+        for _ in 0..100 {
+            let mut len_buf = [0u8; 2];
+            if file.read(&mut len_buf).is_ok() {
+                let frame_len = u16::from_le_bytes(len_buf) as usize;
+                if frame_len > 0 && frame_len <= buf.len() {
+                    if file.read_exact(&mut buf[..frame_len]).is_ok() {
+                        // 0x0C report: profile at buf[19] (header 4 + payload[15])
+                        if buf[0] == 0x0C && frame_len >= 21 {
+                            initial_profile = buf[19];
+                            log::info!("Initial hw profile: {}", initial_profile);
+                            break;
+                        }
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+        // Restore blocking mode
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK);
+        }
+    }
+
+    let mut prev_state = GamepadState::default();
+    prev_state.hw_profile = initial_profile;
+
     Ok(ControllerState {
         source: InputSource::UsbMiscDev { file },
         gamepad,
         config,
-        prev_state: GamepadState::default(),
+        prev_state,
         device_id,
+        controller_name,
         hw_cache,
     })
 }
@@ -332,6 +401,7 @@ fn setup_evdev_controller(device: evdev::EvdevDevice, idx: usize) -> Result<Cont
         config,
         prev_state: GamepadState::default(),
         device_id,
+        controller_name: "Elite 2".to_string(),
         hw_cache,
     })
 }
@@ -344,24 +414,16 @@ fn load_hw_cache() -> HwProfileCache {
     })
 }
 
-/// Suppress paddle events that are hardware-remapped on the controller.
-/// When a paddle is remapped in the hardware profile, the controller already
-/// sends the remapped button — emitting the paddle event too would be a duplicate.
-fn suppress_hw_remapped_paddles(state: &mut GamepadState, hw_cache: &HwProfileCache) {
-    let profile_idx = state.hw_profile.saturating_sub(1) as usize;
-    if state.hw_profile == 0 || profile_idx >= 3 {
-        return; // Profile 0 = default, no hardware remaps
+/// Suppress paddle events on hardware profiles 1-3.
+/// On profiles 1-3, paddles are always aliases for face/ext buttons —
+/// the controller sends the mapped button press directly.
+/// Sending the paddle event too would cause duplicates.
+/// On profile 0, paddles are independent buttons (for Steam Input).
+fn suppress_hw_profile_paddles(state: &mut GamepadState) {
+    if state.hw_profile == 0 {
+        return; // Profile 0: paddles are independent, pass through
     }
-    let hw = &hw_cache.profiles[profile_idx];
-    if !hw.has_any_remap() {
-        return;
-    }
-    // Paddles are part of the extended remap region on the controller.
-    // If any face or ext button is remapped, paddles that trigger those
-    // remapped actions are handled by the controller hardware.
-    // We suppress the raw paddle state to avoid duplicates.
-    // Note: we always suppress paddles when the profile has any remaps,
-    // because the controller firmware handles paddle->button mapping internally.
+    // Profiles 1-3: paddles are button aliases, suppress raw paddle events
     state.paddle_ur = false;
     state.paddle_lr = false;
     state.paddle_ul = false;
@@ -381,7 +443,7 @@ fn process_events(ctrl: &mut ControllerState) -> Result<()> {
                 return Ok(());
             }
             let mut current = parse_hidraw_report(&buf[..n]);
-            suppress_hw_remapped_paddles(&mut current, &ctrl.hw_cache);
+            suppress_hw_profile_paddles(&mut current);
 
             if current.hw_profile == 0 {
                 let identity = Profile::default();
@@ -415,7 +477,7 @@ fn process_events(ctrl: &mut ControllerState) -> Result<()> {
                 return Ok(());
             }
             let mut current = parse_hidraw_report(&buf[..frame_len]);
-            suppress_hw_remapped_paddles(&mut current, &ctrl.hw_cache);
+            suppress_hw_profile_paddles(&mut current);
 
             if current.hw_profile == 0 {
                 let identity = Profile::default();
@@ -456,13 +518,40 @@ fn process_events(ctrl: &mut ControllerState) -> Result<()> {
                 return Ok(());
             }
 
+            // Handle profile switch notification (command 0x1E, sub 0x03)
+            if buf[0] == 0x1E && frame_len >= 5 && buf[4] == 0x03 {
+                let new_profile = buf[5];
+                log::info!("USB profile switch (0x1E): {}", new_profile);
+                ctrl.prev_state.hw_profile = new_profile;
+                return Ok(());
+            }
+
+            // Skip non-input commands (ACKs, status, vendor responses, HELLOs)
+            if matches!(buf[0], 0x01 | 0x02 | 0x03 | 0x4D | 0x1E) {
+                return Ok(());
+            }
+
+            // 0x0C ELITE report: extract profile from payload byte 15
+            if buf[0] == 0x0C && frame_len >= 21 {
+                let new_profile = buf[19]; // header(4) + payload[15] = buf[19]
+                if new_profile != ctrl.prev_state.hw_profile {
+                    log::info!("USB profile switch: {} -> {}", ctrl.prev_state.hw_profile, new_profile);
+                    ctrl.prev_state.hw_profile = new_profile;
+                    // Re-read the new profile from controller and update cache
+                    refresh_hw_profile_cache(ctrl, new_profile);
+                }
+                return Ok(());
+            }
+
             // Only process GIP input reports (command 0x20)
             if buf[0] != 0x20 || frame_len < 18 {
                 return Ok(());
             }
             let mut current = parse_gip_input(&buf[..frame_len]);
-            // Preserve Xbox button state from command 0x07
+            // Preserve state from other GIP commands (0x07 guide, 0x0C profile)
             current.btn_xbox = ctrl.prev_state.btn_xbox;
+            current.hw_profile = ctrl.prev_state.hw_profile;
+            suppress_hw_profile_paddles(&mut current);
 
             if current.hw_profile == 0 {
                 let identity = Profile::default();
@@ -502,6 +591,64 @@ fn process_events(ctrl: &mut ControllerState) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Re-read a specific hardware profile (or all profiles) from the controller
+/// and update the local cache. Called on USB profile switch.
+fn refresh_hw_profile_cache(ctrl: &mut ControllerState, profile_num: u8) {
+    if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
+        gip.unlock();
+
+        if profile_num >= 1 && profile_num <= 3 {
+            let idx = (profile_num - 1) as usize;
+            if let Some(mapping) = xbelite2_gip::profile::read_mapping(&mut gip, idx, 0) {
+                let mut paddle_region = [0u8; 11];
+                if mapping.raw.len() >= 28 {
+                    paddle_region[..11].copy_from_slice(&mapping.raw[17..28]);
+                }
+                let (shift_a, shift_ext) = if let Some(shift) = xbelite2_gip::profile::read_mapping(&mut gip, idx, 1) {
+                    (shift.remap_a, shift.remap_ext)
+                } else {
+                    ([0x04,0x05,0x06,0x07], [0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F])
+                };
+                ctrl.hw_cache.profiles[idx] = xbelite2_gip::hw_profile::HwProfile {
+                    remap_a: mapping.remap_a,
+                    remap_b: mapping.remap_b,
+                    remap_ext: mapping.remap_ext,
+                    shift_remap_a: shift_a,
+                    shift_remap_ext: shift_ext,
+                    paddle_region,
+                    deadzones: mapping.deadzones,
+                    color: mapping.color,
+                    brightness: mapping.brightness,
+                    vibration: mapping.vibration,
+                };
+                log::info!("Refreshed hw profile {} cache", profile_num);
+            }
+        } else {
+            // Profile 0 — read all profiles to stay in sync
+            let cache = hw_profile::read_from_controller(&mut gip);
+            ctrl.hw_cache = cache;
+            log::info!("Refreshed all hw profile caches");
+        }
+
+        let cache_dir = std::path::PathBuf::from("/var/cache/xbelite2");
+        if let Err(e) = hw_profile::save_to(&ctrl.hw_cache, &cache_dir) {
+            log::warn!("Failed to save hw profile cache: {e}");
+        }
+    }
+}
+
+/// Send USB keepalive and poll for profile changes.
+/// The controller expects periodic 0x09 commands to confirm the host is alive.
+/// We also query 0x4D sub 0x03 to detect profile switches.
+fn send_usb_keepalive(ctrl: &mut ControllerState) {
+    if let InputSource::UsbMiscDev { file } = &mut ctrl.source {
+        use std::io::Write;
+        // Send rumble stop as keepalive (all motors 0)
+        let keepalive = [0x09u8, 0x00, 0x00, 0x09, 0x00, 0x0F, 0, 0, 0, 0, 0xFF, 0x00, 0xEB];
+        let _ = file.write_all(&keepalive);
+    }
 }
 
 /// Handle force-feedback events from uinput (e.g. Steam "Ping" button).
@@ -879,16 +1026,30 @@ fn handle_ipc_request(
                     if s.paddle_ll { paddles |= 0x08; }
                     DeviceStatus {
                         device_id: ctrl.device_id.clone(),
-                        name: match &ctrl.source {
-                            InputSource::Hidraw { .. } => "Elite 2 (hidraw)".to_string(),
-                            InputSource::MiscDev { .. } => "Elite 2 (BT)".to_string(),
-                            InputSource::UsbMiscDev { .. } => "Elite 2 (USB)".to_string(),
-                            InputSource::Evdev { reader } => reader.info.name.clone(),
-                        },
+                        name: ctrl.controller_name.clone(),
                         hw_profile: s.hw_profile,
                         active_profile: ctrl.config.active_override.unwrap_or(0),
                         connected: true,
                         is_usb: matches!(&ctrl.source, InputSource::UsbMiscDev { .. }),
+                        profile_color: {
+                            let pi = s.hw_profile.saturating_sub(1) as usize;
+                            if s.hw_profile >= 1 && pi < 3 {
+                                match ctrl.hw_cache.profiles[pi].color {
+                                    Some((r, g, b)) => format!("#{r:02x}{g:02x}{b:02x}"),
+                                    None => "default".to_string(),
+                                }
+                            } else {
+                                "default".to_string()
+                            }
+                        },
+                        profile_brightness: {
+                            let pi = s.hw_profile.saturating_sub(1) as usize;
+                            if s.hw_profile >= 1 && pi < 3 {
+                                ctrl.hw_cache.profiles[pi].brightness
+                            } else {
+                                100
+                            }
+                        },
                         buttons,
                         paddles,
                         left_stick_x: s.left_stick_x,
@@ -988,6 +1149,129 @@ fn handle_ipc_request(
                         std::thread::sleep(std::time::Duration::from_millis(100));
                     }
                 });
+                IpcResponse::Ok
+            } else {
+                IpcResponse::Error { message: format!("Device {device_id} not found") }
+            }
+        }
+        IpcRequest::SetProfileColor { device_id, r, g, b } => {
+            if let Some(ctrl) = controllers.get_mut(&device_id) {
+                if !matches!(&ctrl.source, InputSource::UsbMiscDev { .. }) {
+                    return IpcResponse::Error { message: "Color change requires USB".into() };
+                }
+                let hw = ctrl.prev_state.hw_profile;
+                if hw < 1 || hw > 3 {
+                    return IpcResponse::Error { message: "Not on an editable profile".into() };
+                }
+                let idx = (hw - 1) as usize;
+                if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
+                    gip.unlock();
+                    xbelite2_gip::profile::set_color(&mut gip, idx, r, g, b);
+                    xbelite2_gip::led::set_color(&mut gip, r, g, b);
+                    // Update cache
+                    ctrl.hw_cache.profiles[idx].color = Some((r, g, b));
+                    let cache_dir = std::path::PathBuf::from("/var/cache/xbelite2");
+                    let _ = hw_profile::save_to(&ctrl.hw_cache, &cache_dir);
+                    log::info!("Set profile {} color to #{r:02x}{g:02x}{b:02x}", hw);
+                }
+                IpcResponse::Ok
+            } else {
+                IpcResponse::Error { message: format!("Device {device_id} not found") }
+            }
+        }
+        IpcRequest::SetDeviceName { device_id, name } => {
+            if let Some(ctrl) = controllers.get_mut(&device_id) {
+                if !matches!(&ctrl.source, InputSource::UsbMiscDev { .. }) {
+                    return IpcResponse::Error { message: "Name change requires USB".into() };
+                }
+                if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
+                    gip.unlock();
+                    if let Some(readback) = xbelite2_gip::name::write(&mut gip, &name) {
+                        ctrl.controller_name = readback.clone();
+                        log::info!("Set controller name to \"{readback}\"");
+                    }
+                }
+                IpcResponse::Ok
+            } else {
+                IpcResponse::Error { message: format!("Device {device_id} not found") }
+            }
+        }
+        IpcRequest::SetHwRemap { device_id, src, normal_dst, shift_dst } => {
+            if let Some(ctrl) = controllers.get_mut(&device_id) {
+                if !matches!(&ctrl.source, InputSource::UsbMiscDev { .. }) {
+                    return IpcResponse::Error { message: "Remap requires USB".into() };
+                }
+                let hw = ctrl.prev_state.hw_profile;
+                if hw < 1 || hw > 3 {
+                    return IpcResponse::Error { message: "Not on an editable profile".into() };
+                }
+                let idx = (hw - 1) as usize;
+                let src_btn = match xbelite2_gip::types::GipButton::from_name(&src) {
+                    Some(b) => b, None => return IpcResponse::Error { message: format!("Unknown button: {src}") },
+                };
+                let normal_btn = match xbelite2_gip::types::GipButton::from_name(&normal_dst) {
+                    Some(b) => b, None => return IpcResponse::Error { message: format!("Unknown button: {normal_dst}") },
+                };
+                let shift_btn = match xbelite2_gip::types::GipButton::from_name(&shift_dst) {
+                    Some(b) => b, None => return IpcResponse::Error { message: format!("Unknown button: {shift_dst}") },
+                };
+                if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
+                    gip.unlock();
+                    xbelite2_gip::profile::remap_buttons(&mut gip, idx, &[(src_btn, normal_btn)]);
+                    xbelite2_gip::profile::remap_shift(&mut gip, idx, &[(src_btn, shift_btn)]);
+                    log::info!("Remapped {} -> normal={}, shift={} on profile {}", src, normal_dst, shift_dst, hw);
+                }
+                // Refresh cache
+                refresh_hw_profile_cache(ctrl, hw);
+                IpcResponse::Ok
+            } else {
+                IpcResponse::Error { message: format!("Device {device_id} not found") }
+            }
+        }
+        IpcRequest::PersistHwChanges { device_id } => {
+            if let Some(ctrl) = controllers.get_mut(&device_id) {
+                if !matches!(&ctrl.source, InputSource::UsbMiscDev { .. }) {
+                    return IpcResponse::Error { message: "Persist requires USB".into() };
+                }
+                if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
+                    gip.unlock();
+                    xbelite2_gip::profile::commit(&mut gip);
+                    log::info!("Persisted hardware changes to controller flash");
+                }
+                // Re-read all profiles to sync cache
+                refresh_hw_profile_cache(ctrl, 0);
+                IpcResponse::Ok
+            } else {
+                IpcResponse::Error { message: format!("Device {device_id} not found") }
+            }
+        }
+        IpcRequest::SetProfileBrightness { device_id, brightness } => {
+            if let Some(ctrl) = controllers.get_mut(&device_id) {
+                if !matches!(&ctrl.source, InputSource::UsbMiscDev { .. }) {
+                    return IpcResponse::Error { message: "Brightness change requires USB".into() };
+                }
+                let hw = ctrl.prev_state.hw_profile;
+                if hw < 1 || hw > 3 {
+                    return IpcResponse::Error { message: "Not on an editable profile".into() };
+                }
+                let idx = (hw - 1) as usize;
+                if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
+                    gip.unlock();
+                    // Read-modify-write both slots
+                    for slot in 0..2 {
+                        let page = xbelite2_gip::types::PROFILE_MAPPING_PAGES[idx][slot];
+                        if let Some(raw) = xbelite2_gip::profile::read_page(&mut gip, page, xbelite2_gip::types::MAPPING_SIZE) {
+                            let mut data = raw;
+                            data[xbelite2_gip::types::OFF_BRIGHTNESS] = brightness.min(100);
+                            xbelite2_gip::profile::write_page(&mut gip, page, &data);
+                        }
+                    }
+                    xbelite2_gip::profile::commit(&mut gip);
+                    ctrl.hw_cache.profiles[idx].brightness = brightness.min(100);
+                    let cache_dir = std::path::PathBuf::from("/var/cache/xbelite2");
+                    let _ = hw_profile::save_to(&ctrl.hw_cache, &cache_dir);
+                    log::info!("Set profile {} brightness to {}", hw, brightness);
+                }
                 IpcResponse::Ok
             } else {
                 IpcResponse::Error { message: format!("Device {device_id} not found") }

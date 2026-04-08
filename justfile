@@ -27,13 +27,36 @@ kmod:
 
 # Build daemon
 build:
-    cargo build --release
+    cargo build --workspace --release
 
 # Build and install everything locally (no package)
-install: build kmod
+install: build
+    sudo systemctl stop xbelite2d
     sudo cp target/release/xbelite2d /usr/bin/xbelite2d
-    sudo systemctl restart xbelite2d
+    sudo cp target/release/xbelite2-gui /usr/bin/xbelite2-gui
+    sudo systemctl start xbelite2d
     @echo "Daemon restarted"
+
+# Disable all Xbox controller modules for USB passthrough to VM
+passthrough:
+    sudo systemctl stop xbelite2d
+    -sudo rmmod xbelite2 2>/dev/null
+    -sudo rmmod xpad 2>/dev/null
+    -sudo rmmod hid_microsoft 2>/dev/null
+    printf 'blacklist xbelite2\nblacklist xpad\nblacklist hid_microsoft\ninstall xbelite2 /bin/false\ninstall xpad /bin/false\n' | sudo tee /etc/modprobe.d/xbelite2-temp-blacklist.conf
+    sudo depmod -a
+    sudo udevadm control --reload-rules
+    sudo udevadm trigger
+    @echo "All Xbox modules blacklisted. Unplug controller, wait 5 sec, replug, then pass to VM."
+    @echo "Run 'just passthrough-done' when finished."
+
+# Re-enable modules after VM passthrough
+passthrough-done:
+    sudo rm -f /etc/modprobe.d/xbelite2-temp-blacklist.conf
+    sudo udevadm control --reload-rules
+    sudo modprobe xbelite2
+    sudo systemctl start xbelite2d
+    @echo "Modules re-enabled"
 
 aur_dir := "../aur/xbelite2-dkms"
 

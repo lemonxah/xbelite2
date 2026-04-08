@@ -299,18 +299,33 @@ static const struct file_operations misc_fops = {
 };
 
 // ---- USB GIP init work (runs in process context, safe to sleep) ----
+// Init sequence matches Linux kernel xpad.c for Elite 2 (0x045e:0x0b00)
 static void usb_init_work(struct work_struct *work)
 {
 	struct xbelite2_usb *d = container_of(work, struct xbelite2_usb, init_work);
+	// 1. Power on (all Xbox One controllers)
 	static const u8 pwr[] = {0x05, 0x20, 0x00, 0x01, 0x00};
-	static const u8 init[] = {0x4D, 0x10, 0x01, 0x02, 0x07, 0x00};
+	// 2. BT→USB transition init (required for Elite 2 / Xbox One S)
+	static const u8 s_init[] = {0x05, 0x20, 0x00, 0x0f, 0x06};
+	// 3. Extended reports (paddles, profile data)
+	static const u8 ext_init[] = {0x4D, 0x10, 0x01, 0x02, 0x07, 0x00};
+	// 4. LED on
+	static const u8 led_on[] = {0x0A, 0x20, 0x00, 0x03, 0x00, 0x01, 0x14};
+	// 5. Auth done
+	static const u8 auth_done[] = {0x06, 0x20, 0x00, 0x02, 0x01, 0x00};
 	int a;
 
 	if (!d->running) return;
 	usb_interrupt_msg(d->udev, usb_sndintpipe(d->udev, 0x02),
 			  (void *)pwr, sizeof(pwr), &a, 1000);
 	usb_interrupt_msg(d->udev, usb_sndintpipe(d->udev, 0x02),
-			  (void *)init, sizeof(init), &a, 1000);
+			  (void *)s_init, sizeof(s_init), &a, 1000);
+	usb_interrupt_msg(d->udev, usb_sndintpipe(d->udev, 0x02),
+			  (void *)ext_init, sizeof(ext_init), &a, 1000);
+	usb_interrupt_msg(d->udev, usb_sndintpipe(d->udev, 0x02),
+			  (void *)led_on, sizeof(led_on), &a, 1000);
+	usb_interrupt_msg(d->udev, usb_sndintpipe(d->udev, 0x02),
+			  (void *)auth_done, sizeof(auth_done), &a, 1000);
 }
 
 // ---- USB GIP IRQ ----

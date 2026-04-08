@@ -33,6 +33,7 @@ pub mod qobject {
         // Connection mode
         #[qproperty(bool, is_usb)]
         #[qproperty(QString, profile_color)] // "#rrggbb" or "default"
+        #[qproperty(i32, profile_brightness)] // 0-100
         // Live input state from controller
         #[qproperty(i32, live_buttons)]
         #[qproperty(i32, live_paddles)]
@@ -108,6 +109,18 @@ pub mod qobject {
         /// Button names: A, B, X, Y, LB, RB, LT, RT, DUp, DDown, DLeft, DRight
         #[qinvokable]
         fn set_hw_remap(self: Pin<&mut ProfileModel>, src: QString, normal_dst: QString, shift_dst: QString);
+
+        /// Set a button as the shift modifier for the current hw profile.
+        #[qinvokable]
+        fn set_shift_button(self: Pin<&mut ProfileModel>, btn: QString);
+
+        #[qinvokable]
+        fn set_profile_brightness_value(self: Pin<&mut ProfileModel>, brightness: i32);
+
+        /// Get the current profile's remap data as JSON for the GUI to display.
+        /// Returns: {"normal": {"A":"B","X":"Y",...}, "shift": {"A":"LB",...}, "color": "#rrggbb"}
+        #[qinvokable]
+        fn get_hw_profile_info(self: &ProfileModel) -> QString;
     }
 }
 
@@ -197,7 +210,14 @@ enum Req {
     SetActiveProfile { device_id: String, profile_index: Option<usize> },
     TestVibration { device_id: String, motor: u8, intensity: u8 },
     TestAllVibration { device_id: String, intensities: [u8; 4] },
+    SetProfileColor { device_id: String, r: u8, g: u8, b: u8 },
+    SetDeviceName { device_id: String, name: String },
+    SetHwRemap { device_id: String, src: String, normal_dst: String, shift_dst: String },
+    SetProfileBrightness { device_id: String, brightness: u8 },
+    PersistHwChanges { device_id: String },
 }
+
+fn default_brightness() -> u8 { 100 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -218,6 +238,10 @@ struct DevSt {
     connected: bool,
     #[serde(default)]
     is_usb: bool,
+    #[serde(default)]
+    profile_color: String,
+    #[serde(default = "default_brightness")]
+    profile_brightness: u8,
     #[serde(default)]
     buttons: u16,
     #[serde(default)]
@@ -259,6 +283,7 @@ pub struct ProfileModelRust {
     right_stick_deadzone: i32,
     is_usb: bool,
     profile_color: QString,
+    profile_brightness: i32,
     live_buttons: i32,
     live_paddles: i32,
     live_lx: i32,
@@ -300,6 +325,7 @@ impl Default for ProfileModelRust {
             right_stick_deadzone: 0,
             is_usb: false,
             profile_color: QString::from("default"),
+            profile_brightness: 100,
             live_buttons: 0,
             live_paddles: 0,
             live_lx: 0,
@@ -334,9 +360,13 @@ impl qobject::ProfileModel {
                     self.as_mut().set_hw_profile(hw);
                     self.as_mut().set_connected(dev.connected);
                     self.as_mut().set_is_usb(dev.is_usb);
+                    let color_str = if dev.profile_color.is_empty() { "default" } else { &dev.profile_color };
+                    self.as_mut().set_profile_color(QString::from(color_str));
                     let did = dev.device_id.clone();
                     self.as_mut().rust_mut().device_id = did.clone();
                     let _ = ipc(&sp, &Req::SetConfig { device_id: did, config });
+
+                    self.as_mut().set_profile_brightness(dev.profile_brightness as i32);
 
                     // Select the correct software profile based on HW profile
                     if hw >= 1 && hw <= 3 {
@@ -463,12 +493,17 @@ impl qobject::ProfileModel {
 
     fn save_profile(self: Pin<&mut Self>) {
         let cfg = self.rust().config.clone();
-        // Save to user's home directory
-        save_user_config(&cfg);
-        // Send to daemon for immediate application
         let sp = sock_path();
         let did = self.rust().device_id.clone();
-        let _ = ipc(&sp, &Req::SetConfig { device_id: did, config: cfg });
+
+        // Save software config
+        save_user_config(&cfg);
+        let _ = ipc(&sp, &Req::SetConfig { device_id: did.clone(), config: cfg });
+
+        // Persist hardware changes to controller flash (USB only)
+        if self.rust().is_usb && !did.is_empty() {
+            let _ = ipc(&sp, &Req::PersistHwChanges { device_id: did });
+        }
     }
 
     fn get_profile_names(&self) -> QString {
@@ -485,13 +520,12 @@ impl qobject::ProfileModel {
 
     fn set_device_name_text(mut self: Pin<&mut Self>, name: QString) {
         if !self.rust().is_usb { return; }
+        let sp = sock_path();
+        let did = self.rust().device_id.clone();
         let name_str = name.to_string();
-        // Write via GIP (runs in-process, needs USB)
-        if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
-            gip.unlock();
-            if let Some(readback) = xbelite2_gip::name::write(&mut gip, &name_str) {
-                self.as_mut().set_device_name(QString::from(&readback));
-            }
+        if !did.is_empty() {
+            let _ = ipc(&sp, &Req::SetDeviceName { device_id: did, name: name_str.clone() });
+            self.as_mut().set_device_name(QString::from(&name_str));
         }
     }
 
@@ -504,68 +538,134 @@ impl qobject::ProfileModel {
         let g = u8::from_str_radix(&clean[2..4], 16).unwrap_or(0);
         let b = u8::from_str_radix(&clean[4..6], 16).unwrap_or(0);
 
-        let hw = self.rust().hw_profile;
-        if hw < 1 || hw > 3 { return; }
-        let profile_idx = (hw - 1) as usize;
-
-        if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
-            gip.unlock();
-            xbelite2_gip::profile::set_color(&mut gip, profile_idx, r, g, b);
-            xbelite2_gip::led::set_color(&mut gip, r, g, b);
+        let sp = sock_path();
+        let did = self.rust().device_id.clone();
+        if !did.is_empty() {
+            let _ = ipc(&sp, &Req::SetProfileColor { device_id: did, r, g, b });
         }
         self.as_mut().set_profile_color(QString::from(&format!("#{:02x}{:02x}{:02x}", r, g, b)));
     }
 
-    fn read_hw_profile_color(mut self: Pin<&mut Self>) {
-        if !self.rust().is_usb {
-            self.as_mut().set_profile_color(QString::from("default"));
-            return;
-        }
+    fn read_hw_profile_color(self: Pin<&mut Self>) {
+        // Color is now read from daemon IPC status in refresh_status()
+    }
+
+    fn get_hw_profile_info(&self) -> QString {
+        // This is called from QML to get remap info for the current profile.
+        // We read from the daemon's cached hw_profiles.json file instead of
+        // opening the GIP device (which would conflict with the daemon).
         let hw = self.rust().hw_profile;
         if hw < 1 || hw > 3 {
-            self.as_mut().set_profile_color(QString::from("default"));
-            return;
+            return QString::from("{}");
         }
-        let profile_idx = (hw - 1) as usize;
-        if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
-            if let Some(mapping) = xbelite2_gip::profile::read_mapping(&mut gip, profile_idx, 0) {
-                match mapping.color {
-                    Some((r, g, b)) => {
-                        self.as_mut().set_profile_color(QString::from(&format!("#{:02x}{:02x}{:02x}", r, g, b)));
-                    }
-                    None => {
-                        self.as_mut().set_profile_color(QString::from("default"));
-                    }
-                }
+        let idx = (hw - 1) as usize;
+
+        let cache_dir = std::path::PathBuf::from("/var/cache/xbelite2");
+        let cache = match xbelite2_gip::hw_profile::load_from(&cache_dir) {
+            Some(c) => c,
+            None => return QString::from("{}"),
+        };
+        let profile = &cache.profiles[idx];
+
+        let btn_name = |code: u8| -> &str {
+            xbelite2_gip::types::GipButton::from_code(code)
+                .map(|b| b.name())
+                .unwrap_or("?")
+        };
+
+        let default_face: [u8; 4] = [0x04, 0x05, 0x06, 0x07];
+        let default_ext: [u8; 8] = [0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F];
+        let face_labels = ["A", "B", "X", "Y"];
+        let ext_labels = ["LB", "RB", "LT", "RT", "DUp", "DDown", "DLeft", "DRight"];
+
+        let mut normal_map = serde_json::Map::new();
+        let mut shift_map = serde_json::Map::new();
+
+        // Normal mode (remap_a from SlotA — stored in cache)
+        for (i, &code) in profile.remap_a.iter().enumerate() {
+            if code != default_face[i] {
+                normal_map.insert(face_labels[i].into(), serde_json::Value::String(btn_name(code).into()));
             }
         }
+        for (i, &code) in profile.remap_ext.iter().enumerate() {
+            if code != default_ext[i] {
+                normal_map.insert(ext_labels[i].into(), serde_json::Value::String(btn_name(code).into()));
+            }
+        }
+
+        // Shift mode (from SlotB page)
+        for (i, &code) in profile.shift_remap_a.iter().enumerate() {
+            if code != default_face[i] {
+                shift_map.insert(face_labels[i].into(), serde_json::Value::String(btn_name(code).into()));
+            }
+        }
+        for (i, &code) in profile.shift_remap_ext.iter().enumerate() {
+            if code != default_ext[i] {
+                shift_map.insert(ext_labels[i].into(), serde_json::Value::String(btn_name(code).into()));
+            }
+        }
+
+        let color_str = match profile.color {
+            Some((r, g, b)) => format!("#{r:02x}{g:02x}{b:02x}"),
+            None => "default".to_string(),
+        };
+
+        // Detect shift button: the button missing from ext[] (shifted out, 0x00 at end)
+        let default_ext_set: std::collections::HashSet<u8> = default_ext.iter().copied().collect();
+        let current_ext_set: std::collections::HashSet<u8> = profile.remap_ext.iter().copied().filter(|&b| b != 0).collect();
+        let shift_button = if profile.remap_ext.iter().any(|&b| b == 0) {
+            // Find which default button is missing
+            default_ext_set.difference(&current_ext_set)
+                .next()
+                .and_then(|&code| xbelite2_gip::types::GipButton::from_code(code))
+                .map(|b| b.name().to_string())
+        } else {
+            None
+        };
+
+        let result = serde_json::json!({
+            "normal": normal_map,
+            "shift": shift_map,
+            "color": color_str,
+            "shift_button": shift_button,
+        });
+        QString::from(&result.to_string())
+    }
+
+    fn set_profile_brightness_value(mut self: Pin<&mut Self>, brightness: i32) {
+        if !self.rust().is_usb { return; }
+        let sp = sock_path();
+        let did = self.rust().device_id.clone();
+        if !did.is_empty() {
+            let _ = ipc(&sp, &Req::SetProfileBrightness {
+                device_id: did,
+                brightness: brightness.clamp(0, 100) as u8,
+            });
+        }
+        self.as_mut().set_profile_brightness(brightness);
+    }
+
+    fn set_shift_button(self: Pin<&mut Self>, btn: QString) {
+        if !self.rust().is_usb { return; }
+        let hw = self.rust().hw_profile;
+        if hw < 1 || hw > 3 { return; }
+        // TODO: Write shift modifier assignment to controller
+        // The shift button config is likely stored in the profile's reserved bytes (17-27)
+        // or via a separate 0x4D sub-command. Needs a Windows capture with shift config.
+        log::info!("Set shift modifier: {} for profile {}", btn.to_string(), hw);
     }
 
     fn set_hw_remap(self: Pin<&mut Self>, src: QString, normal_dst: QString, shift_dst: QString) {
         if !self.rust().is_usb { return; }
-        let hw = self.rust().hw_profile;
-        if hw < 1 || hw > 3 { return; }
-        let profile_idx = (hw - 1) as usize;
-
-        let src_btn = match xbelite2_gip::types::GipButton::from_name(&src.to_string()) {
-            Some(b) => b,
-            None => return,
-        };
-        let normal_btn = match xbelite2_gip::types::GipButton::from_name(&normal_dst.to_string()) {
-            Some(b) => b,
-            None => return,
-        };
-        let shift_btn = match xbelite2_gip::types::GipButton::from_name(&shift_dst.to_string()) {
-            Some(b) => b,
-            None => return,
-        };
-
-        if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
-            gip.unlock();
-            // Write normal mode remap (SlotA)
-            xbelite2_gip::profile::remap_buttons(&mut gip, profile_idx, &[(src_btn, normal_btn)]);
-            // Write shift mode remap (SlotB)
-            xbelite2_gip::profile::remap_shift(&mut gip, profile_idx, &[(src_btn, shift_btn)]);
+        let sp = sock_path();
+        let did = self.rust().device_id.clone();
+        if !did.is_empty() {
+            let _ = ipc(&sp, &Req::SetHwRemap {
+                device_id: did,
+                src: src.to_string(),
+                normal_dst: normal_dst.to_string(),
+                shift_dst: shift_dst.to_string(),
+            });
         }
     }
 
@@ -640,12 +740,16 @@ impl qobject::ProfileModel {
             self.as_mut().set_is_usb(dev.is_usb);
             self.as_mut().set_device_name(QString::from(&dev.name));
 
+            // Update profile color and brightness from daemon cache
+            let color_str = if dev.profile_color.is_empty() { "default" } else { &dev.profile_color };
+            self.as_mut().set_profile_color(QString::from(color_str));
+            self.as_mut().set_profile_brightness(dev.profile_brightness as i32);
+
             if old_hw != new_hw && new_hw >= 1 && new_hw <= 3 {
                 let sw_idx = (new_hw - 1) as usize;
                 self.as_mut().rust_mut().sel_idx = sw_idx;
                 self.as_mut().set_active_profile(new_hw);
                 self.as_mut().load_profile(sw_idx);
-                self.as_mut().read_hw_profile_color();
             }
 
             self.as_mut().set_live_buttons(dev.buttons as i32);
