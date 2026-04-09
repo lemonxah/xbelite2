@@ -10,23 +10,51 @@ Item {
     // GIP remap codes (hardware-level, confirmed by testing)
     // Note: these differ from input report bit positions!
     readonly property var gipCodes: ({
-            "A": 0x04, "B": 0x05, "X": 0x06, "Y": 0x07,
-            "DUp": 0x08, "DDown": 0x09, "DLeft": 0x0A, "DRight": 0x0B,
-            "LB": 0x0C, "RB": 0x0D, "L Stick": 0x0E, "R Stick": 0x0F,
-            "P1": true, "P2": true, "P3": true, "P4": true
+            "A": 0x04,
+            "B": 0x05,
+            "X": 0x06,
+            "Y": 0x07,
+            "DUp": 0x08,
+            "DDown": 0x09,
+            "DLeft": 0x0A,
+            "DRight": 0x0B,
+            "LB": 0x0C,
+            "RB": 0x0D,
+            "L Stick": 0x0E,
+            "R Stick": 0x0F,
+            "P1": true,
+            "P2": true,
+            "P3": true,
+            "P4": true
         })
 
     // Buttons that can be remapped — face, dpad, bumpers, sticks, paddles
     // LT, RT, View, Menu, Xbox are NOT remappable in hardware
     readonly property var remappableButtons: ({
-            "A": true, "B": true, "X": true, "Y": true,
-            "DUp": true, "DDown": true, "DLeft": true, "DRight": true,
-            "LB": true, "RB": true,
-            "L Stick": true, "R Stick": true,
-            "P1": true, "P2": true, "P3": true, "P4": true
+            "A": true,
+            "B": true,
+            "X": true,
+            "Y": true,
+            "DUp": true,
+            "DDown": true,
+            "DLeft": true,
+            "DRight": true,
+            "LB": true,
+            "RB": true,
+            "L Stick": true,
+            "R Stick": true,
+            "P1": true,
+            "P2": true,
+            "P3": true,
+            "P4": true
         })
 
-    readonly property var paddleIndex: ({"P1": 0, "P2": 1, "P3": 2, "P4": 3})
+    readonly property var paddleIndex: ({
+            "P1": 0,
+            "P2": 1,
+            "P3": 2,
+            "P4": 3
+        })
     readonly property bool selectedIsPaddle: selectedButton in paddleIndex
 
     // Target buttons for remapping (what a button can be remapped TO)
@@ -88,7 +116,7 @@ Item {
     property string shiftButton: "" // Which button is the shift modifier (from hw_profile)
 
     onSelectedButtonChanged: {
-        refreshRemaps()
+        refreshRemaps();
     }
     property var hwRemaps: ({})  // parsed from get_hw_profile_info()
 
@@ -111,9 +139,6 @@ Item {
         var _v = remapVersion; // force dependency
         if (hwRemaps && hwRemaps.normal && hwRemaps.normal[btnName])
             return hwRemaps.normal[btnName];
-        // Check paddle remaps
-        if (hwRemaps && hwRemaps.paddles && hwRemaps.paddles[btnName])
-            return hwRemaps.paddles[btnName];
         return "";
     }
 
@@ -150,36 +175,36 @@ Item {
         shiftTarget.currentIndex = shiftVal === "" ? 0 : remapTargets.indexOf(shiftVal) + 1;
     }
 
+    readonly property var paddleDefaults: ({"P1": "A", "P2": "B", "P3": "X", "P4": "Y"})
+
     // Apply remap immediately from current dropdown state
     function applyCurrentRemap() {
-        if (selectedButton === "" || !selectedIsRemappable) return
-        var src = selectedButton
-        var normalBtn = normalTarget.currentIndex === 0 ? src : remapTargets[normalTarget.currentIndex - 1]
-        var shiftBtn = shiftTarget.currentIndex === 0 ? src : remapTargets[shiftTarget.currentIndex - 1]
+        if (selectedButton === "" || !selectedIsRemappable)
+            return;
+        var src = selectedButton;
+        // Paddle default is A/B/X/Y, not the paddle name itself
+        var defaultBtn = selectedIsPaddle ? paddleDefaults[src] : src;
+        var normalBtn = normalTarget.currentIndex === 0 ? defaultBtn : remapTargets[normalTarget.currentIndex - 1];
+        var shiftBtn = shiftTarget.currentIndex === 0 ? defaultBtn : remapTargets[shiftTarget.currentIndex - 1];
 
-        if (selectedIsPaddle) {
-            // Paddle: normal = paddle remap, shift = paddle shift remap
-            var pi = paddleIndex[src]
-            profileModel.set_paddle_remap(pi, normalBtn)
-            // TODO: shift paddle remap via SlotB
-        } else {
-            profileModel.set_hw_remap(src, normalBtn, shiftBtn)
-        }
+        profileModel.set_hw_remap(src, normalBtn, shiftBtn);
 
         // Optimistic update
-        if (!hwRemaps.normal) hwRemaps.normal = {}
-        if (!hwRemaps.shift) hwRemaps.shift = {}
-        if (!hwRemaps.paddles) hwRemaps.paddles = {}
-        if (selectedIsPaddle) {
-            if (normalBtn === src) delete hwRemaps.paddles[src]
-            else hwRemaps.paddles[src] = normalBtn
-        } else {
-            if (normalBtn === src) delete hwRemaps.normal[src]
-            else hwRemaps.normal[src] = normalBtn
-            if (shiftBtn === src) delete hwRemaps.shift[src]
-            else hwRemaps.shift[src] = shiftBtn
+        if (!hwRemaps.normal)
+            hwRemaps.normal = {};
+        if (!hwRemaps.shift)
+            hwRemaps.shift = {};
+        {
+            if (normalBtn === defaultBtn)
+                delete hwRemaps.normal[src];
+            else
+                hwRemaps.normal[src] = normalBtn;
+            if (shiftBtn === defaultBtn)
+                delete hwRemaps.shift[src];
+            else
+                hwRemaps.shift[src] = shiftBtn;
         }
-        remapVersion++
+        remapVersion++;
     }
 
     Component.onCompleted: refreshRemaps()
@@ -432,36 +457,32 @@ Item {
                 textFormat: Text.RichText
             }
 
-
             Button {
                 visible: selectedIsRemappable && !shiftModifierCheck.checked
                 text: "Reset"
                 onClicked: {
-                    normalTarget.currentIndex = 0
-                    shiftTarget.currentIndex = 0
-                    // Write identity mapping (button maps to itself)
-                    var src = selectedButton
-                    if (selectedIsPaddle) {
-                        var pi = paddleIndex[src]
-                        // Default paddle mapping: P1→A, P2→B, P3→X, P4→Y
-                        var defaults = ["A", "B", "X", "Y"]
-                        profileModel.set_paddle_remap(pi, defaults[pi])
-                    } else {
-                        profileModel.set_hw_remap(src, src, src)
-                    }
+                    normalTarget.currentIndex = 0;
+                    shiftTarget.currentIndex = 0;
+                    // Write default mapping (paddles default to A/B/X/Y, buttons to themselves)
+                    var src = selectedButton;
+                    var defaultBtn = selectedIsPaddle ? paddleDefaults[src] : src;
+                    profileModel.set_hw_remap(src, defaultBtn, defaultBtn);
                     // Clear optimistic state
-                    if (hwRemaps.normal) delete hwRemaps.normal[src]
-                    if (hwRemaps.shift) delete hwRemaps.shift[src]
-                    if (hwRemaps.paddles) delete hwRemaps.paddles[src]
-                    remapVersion++
+                    if (hwRemaps.normal)
+                        delete hwRemaps.normal[src];
+                    if (hwRemaps.shift)
+                        delete hwRemaps.shift[src];
+                    remapVersion++;
                 }
                 background: Rectangle {
                     color: parent.hovered ? "#e74c3c" : "#333"
                     radius: 4
                 }
                 contentItem: Text {
-                    text: parent.text; color: "#ccc"
-                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                    text: parent.text
+                    color: "#ccc"
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
                 }
             }
 

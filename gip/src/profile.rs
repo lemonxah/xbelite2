@@ -44,10 +44,15 @@ pub fn begin_write(dev: &mut GipDevice) {
 }
 
 /// Commit written profile data — sends POWER reload to persist changes,
-/// then re-inits extended reports and drains stale responses.
+/// then re-enables extended reports (fire-and-forget to avoid ring buffer conflicts).
 pub fn commit(dev: &mut GipDevice) {
     let _ = dev.send_cmd(0x05, 0x20, &[0x05]);
     std::thread::sleep(std::time::Duration::from_millis(200));
+    // Re-enable extended reports (0x0C profile switch etc.) after power reload.
+    // Send fire-and-forget — vendor_cmd would block waiting for a response
+    // that the daemon's read loop will steal from the shared ring buffer.
+    let _ = dev.send(&[0x4D, 0x10, 0xFE, 0x02, 0x07, 0x00]);
+    std::thread::sleep(std::time::Duration::from_millis(100));
     dev.drain();
 }
 

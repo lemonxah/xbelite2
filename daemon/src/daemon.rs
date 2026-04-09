@@ -608,10 +608,10 @@ fn refresh_hw_profile_cache(ctrl: &mut ControllerState, profile_num: u8) {
                 if mapping.raw.len() >= 28 {
                     reserved[..11].copy_from_slice(&mapping.raw[17..28]);
                 }
-                let (shift_f, shift_e) = if let Some(shift) = xbelite2_gip::profile::read_mapping(&mut gip, idx, 1) {
-                    (shift.face, shift.ext)
+                let (shift_p, shift_f, shift_e) = if let Some(shift) = xbelite2_gip::profile::read_mapping(&mut gip, idx, 1) {
+                    (shift.paddles, shift.face, shift.ext)
                 } else {
-                    (xbelite2_gip::types::DEFAULT_FACE, xbelite2_gip::types::DEFAULT_EXT)
+                    (xbelite2_gip::types::DEFAULT_FACE, xbelite2_gip::types::DEFAULT_FACE, xbelite2_gip::types::DEFAULT_EXT)
                 };
                 let stick_inversion = if let Some(curves) = xbelite2_gip::profile::read_curves(&mut gip, idx, 0) {
                     if curves.raw.len() > 27 { curves.raw[27] } else { 0 }
@@ -620,6 +620,7 @@ fn refresh_hw_profile_cache(ctrl: &mut ControllerState, profile_num: u8) {
                     paddles: mapping.paddles,
                     face: mapping.face,
                     ext: mapping.ext,
+                    shift_paddles: shift_p,
                     shift_face: shift_f,
                     shift_ext: shift_e,
                     reserved,
@@ -1212,29 +1213,39 @@ fn handle_ipc_request(
                     return IpcResponse::Error { message: "Not on an editable profile".into() };
                 }
                 let idx = (hw - 1) as usize;
-                let src_btn = match xbelite2_gip::types::GipButton::from_name(&src) {
-                    Some(b) => b, None => return IpcResponse::Error { message: format!("Unknown button: {src}") },
-                };
                 let normal_btn = match xbelite2_gip::types::GipButton::from_name(&normal_dst) {
                     Some(b) => b, None => return IpcResponse::Error { message: format!("Unknown button: {normal_dst}") },
                 };
                 let shift_btn = match xbelite2_gip::types::GipButton::from_name(&shift_dst) {
                     Some(b) => b, None => return IpcResponse::Error { message: format!("Unknown button: {shift_dst}") },
                 };
+                // Detect paddle source (P1-P4) vs face/ext button
+                let paddle_idx = match src.as_str() {
+                    "P1" => Some(0usize), "P2" => Some(1), "P3" => Some(2), "P4" => Some(3),
+                    _ => None,
+                };
                 if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
                     gip.unlock();
-                    // Use cached data to avoid read conflicts with daemon input
                     let hw_prof = &ctrl.hw_cache.profiles[idx];
                     let page_a = xbelite2_gip::types::PROFILE_MAPPING_PAGES[idx][0];
                     let page_b = xbelite2_gip::types::PROFILE_MAPPING_PAGES[idx][1];
-                    xbelite2_gip::profile::write_remap_from_cache(
-                        &mut gip, page_a, hw_prof.to_slot_a_bytes(), src_btn, normal_btn);
-                    xbelite2_gip::profile::write_remap_from_cache(
-                        &mut gip, page_b, hw_prof.to_slot_b_bytes(), src_btn, shift_btn);
+                    if let Some(pi) = paddle_idx {
+                        xbelite2_gip::profile::write_paddle_from_cache(
+                            &mut gip, page_a, hw_prof.to_slot_a_bytes(), pi, normal_btn);
+                        xbelite2_gip::profile::write_paddle_from_cache(
+                            &mut gip, page_b, hw_prof.to_slot_b_bytes(), pi, shift_btn);
+                    } else {
+                        let src_btn = match xbelite2_gip::types::GipButton::from_name(&src) {
+                            Some(b) => b, None => return IpcResponse::Error { message: format!("Unknown button: {src}") },
+                        };
+                        xbelite2_gip::profile::write_remap_from_cache(
+                            &mut gip, page_a, hw_prof.to_slot_a_bytes(), src_btn, normal_btn);
+                        xbelite2_gip::profile::write_remap_from_cache(
+                            &mut gip, page_b, hw_prof.to_slot_b_bytes(), src_btn, shift_btn);
+                    }
                     xbelite2_gip::profile::commit(&mut gip);
                     log::info!("Remapped {} -> normal={}, shift={} on profile {}", src, normal_dst, shift_dst, hw);
                 }
-                // Refresh cache
                 refresh_hw_profile_cache(ctrl, hw);
                 IpcResponse::Ok
             } else {
@@ -1267,38 +1278,6 @@ fn handle_ipc_request(
                     xbelite2_gip::profile::set_shift_button_from_cache(
                         &mut gip, idx, btn_opt, &cached_a, &cached_b);
                     log::info!("Set shift button to {:?} on profile {}", button, hw);
-                }
-                refresh_hw_profile_cache(ctrl, hw);
-                IpcResponse::Ok
-            } else {
-                IpcResponse::Error { message: format!("Device {device_id} not found") }
-            }
-        }
-        IpcRequest::SetPaddleRemap { device_id, paddle, target } => {
-            if let Some(ctrl) = controllers.get_mut(&device_id) {
-                if !matches!(&ctrl.source, InputSource::UsbMiscDev { .. }) {
-                    return IpcResponse::Error { message: "Paddle remap requires USB".into() };
-                }
-                let hw = ctrl.prev_state.hw_profile;
-                if hw < 1 || hw > 3 {
-                    return IpcResponse::Error { message: "Not on an editable profile".into() };
-                }
-                let idx = (hw - 1) as usize;
-                let target_btn = match xbelite2_gip::types::GipButton::from_name(&target) {
-                    Some(b) => b,
-                    None => return IpcResponse::Error { message: format!("Unknown button: {target}") },
-                };
-                if paddle > 3 {
-                    return IpcResponse::Error { message: "Paddle must be 0-3".into() };
-                }
-                if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
-                    gip.unlock();
-                    let hw_prof = &ctrl.hw_cache.profiles[idx];
-                    let page_a = xbelite2_gip::types::PROFILE_MAPPING_PAGES[idx][0];
-                    xbelite2_gip::profile::write_paddle_from_cache(
-                        &mut gip, page_a, hw_prof.to_slot_a_bytes(), paddle as usize, target_btn);
-                    xbelite2_gip::profile::commit(&mut gip);
-                    log::info!("Remapped P{} -> {} on profile {}", paddle + 1, target, hw);
                 }
                 refresh_hw_profile_cache(ctrl, hw);
                 IpcResponse::Ok

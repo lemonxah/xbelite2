@@ -129,12 +129,6 @@ pub enum IpcRequest {
         device_id: String,
         button: String, // button name or "none" to clear
     },
-    /// Remap a paddle on the current HW profile (USB only)
-    SetPaddleRemap {
-        device_id: String,
-        paddle: u8,  // 0=P1, 1=P2, 2=P3, 3=P4
-        target: String, // button name: A, B, X, Y, LB, etc.
-    },
     /// Persist all pending hardware changes to controller flash
     PersistHwChanges {
         device_id: String,

@@ -22,6 +22,9 @@ pub struct HwProfile {
     pub face: [u8; 4],
     /// Extended outputs (bytes 9-16): [DUp, DDown, DLeft, DRight, LB, RB, LStick, RStick]
     pub ext: [u8; 8],
+    /// SlotB paddle outputs (shift mode page)
+    #[serde(default = "default_paddles")]
+    pub shift_paddles: [u8; 4],
     /// SlotB face remap (shift mode page)
     pub shift_face: [u8; 4],
     /// SlotB extended remap (shift mode page)
@@ -39,6 +42,8 @@ pub struct HwProfile {
     /// Vibration: (left, right)
     pub vibration: (u8, u8),
 }
+
+fn default_paddles() -> [u8; 4] { DEFAULT_FACE }
 
 impl HwProfile {
     pub fn is_ext_remapped(&self, index: usize) -> bool {
@@ -87,7 +92,8 @@ impl HwProfile {
     /// Reconstruct the raw 56-byte SlotB mapping page from cached data.
     pub fn to_slot_b_bytes(&self) -> Vec<u8> {
         let mut data = self.to_slot_a_bytes();
-        // SlotB uses shift_face and shift_ext instead of face/ext
+        // SlotB uses shift variants instead of normal
+        data[OFF_PADDLES..OFF_PADDLES + 4].copy_from_slice(&self.shift_paddles);
         data[OFF_FACE..OFF_FACE + 4].copy_from_slice(&self.shift_face);
         data[OFF_REMAP_EXT..OFF_REMAP_EXT + 8].copy_from_slice(&self.shift_ext);
         data
@@ -110,15 +116,16 @@ pub fn read_from_controller(dev: &mut GipDevice) -> HwProfileCache {
             } else { 0 };
 
             // Also read SlotB (shift page) for shift remaps
-            let (shift_f, shift_e) = if let Some(shift) = profile::read_mapping(dev, i, 1) {
-                (shift.face, shift.ext)
+            let (shift_p, shift_f, shift_e) = if let Some(shift) = profile::read_mapping(dev, i, 1) {
+                (shift.paddles, shift.face, shift.ext)
             } else {
-                (DEFAULT_FACE, DEFAULT_EXT)
+                (DEFAULT_FACE, DEFAULT_FACE, DEFAULT_EXT)
             };
             cache.profiles[i] = HwProfile {
                 paddles: mapping.paddles,
                 face: mapping.face,
                 ext: mapping.ext,
+                shift_paddles: shift_p,
                 shift_face: shift_f,
                 shift_ext: shift_e,
                 reserved: paddle_region,
