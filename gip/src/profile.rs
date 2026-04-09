@@ -43,10 +43,10 @@ pub fn begin_write(dev: &mut GipDevice) {
     dev.drain();
 }
 
-/// Commit written profile data.
-/// Re-init extended reports to ensure controller applies changes, then drain stale responses.
+/// Commit written profile data — sends POWER reload to persist changes,
+/// then re-inits extended reports and drains stale responses.
 pub fn commit(dev: &mut GipDevice) {
-    dev.init_extended();
+    let _ = dev.send_cmd(0x05, 0x20, &[0x05]);
     std::thread::sleep(std::time::Duration::from_millis(200));
     dev.drain();
 }
