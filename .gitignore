@@ -1,2 +1,13 @@
 *.pkg.tar.zst
 target
+
+# Kernel module build artifacts
+kmod/*.o
+kmod/*.ko
+kmod/*.mod
+kmod/*.mod.c
+kmod/*.mod.o
+kmod/.*.cmd
+kmod/modules.order
+kmod/Module.symvers
+kmod/.module-common.o
