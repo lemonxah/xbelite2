@@ -534,10 +534,12 @@ fn process_events(ctrl: &mut ControllerState) -> Result<()> {
             // 0x0C ELITE report: extract profile from payload byte 15
             if buf[0] == 0x0C && frame_len >= 21 {
                 let new_profile = buf[19]; // header(4) + payload[15] = buf[19]
-                if new_profile != ctrl.prev_state.hw_profile {
+                // Only accept profile changes when there's actual input activity.
+                // The controller sends profile=0 in 0x0C when idle/sleeping — ignore that.
+                let has_input = buf[4..19].iter().any(|&b| b != 0);
+                if new_profile != ctrl.prev_state.hw_profile && (new_profile != 0 || has_input) {
                     log::info!("USB profile switch: {} -> {}", ctrl.prev_state.hw_profile, new_profile);
                     ctrl.prev_state.hw_profile = new_profile;
-                    // Re-read the new profile from controller and update cache
                     refresh_hw_profile_cache(ctrl, new_profile);
                 }
                 return Ok(());
@@ -1221,11 +1223,51 @@ fn handle_ipc_request(
                 };
                 if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
                     gip.unlock();
-                    xbelite2_gip::profile::remap_buttons(&mut gip, idx, &[(src_btn, normal_btn)]);
-                    xbelite2_gip::profile::remap_shift(&mut gip, idx, &[(src_btn, shift_btn)]);
+                    // Use cached data to avoid read conflicts with daemon input
+                    let hw_prof = &ctrl.hw_cache.profiles[idx];
+                    let page_a = xbelite2_gip::types::PROFILE_MAPPING_PAGES[idx][0];
+                    let page_b = xbelite2_gip::types::PROFILE_MAPPING_PAGES[idx][1];
+                    xbelite2_gip::profile::write_remap_from_cache(
+                        &mut gip, page_a, hw_prof.to_slot_a_bytes(), src_btn, normal_btn);
+                    xbelite2_gip::profile::write_remap_from_cache(
+                        &mut gip, page_b, hw_prof.to_slot_b_bytes(), src_btn, shift_btn);
+                    xbelite2_gip::profile::commit(&mut gip);
                     log::info!("Remapped {} -> normal={}, shift={} on profile {}", src, normal_dst, shift_dst, hw);
                 }
                 // Refresh cache
+                refresh_hw_profile_cache(ctrl, hw);
+                IpcResponse::Ok
+            } else {
+                IpcResponse::Error { message: format!("Device {device_id} not found") }
+            }
+        }
+        IpcRequest::SetShiftButton { device_id, button } => {
+            if let Some(ctrl) = controllers.get_mut(&device_id) {
+                if !matches!(&ctrl.source, InputSource::UsbMiscDev { .. }) {
+                    return IpcResponse::Error { message: "Shift button requires USB".into() };
+                }
+                let hw = ctrl.prev_state.hw_profile;
+                if hw < 1 || hw > 3 {
+                    return IpcResponse::Error { message: "Not on an editable profile".into() };
+                }
+                let idx = (hw - 1) as usize;
+                let btn_opt = if button == "none" || button.is_empty() {
+                    None
+                } else {
+                    match xbelite2_gip::types::GipButton::from_name(&button) {
+                        Some(b) => Some(b),
+                        None => return IpcResponse::Error { message: format!("Unknown button: {button}") },
+                    }
+                };
+                if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
+                    gip.unlock();
+                    let hw_prof = &ctrl.hw_cache.profiles[idx];
+                    let cached_a = hw_prof.to_slot_a_bytes();
+                    let cached_b = hw_prof.to_slot_b_bytes();
+                    xbelite2_gip::profile::set_shift_button_from_cache(
+                        &mut gip, idx, btn_opt, &cached_a, &cached_b);
+                    log::info!("Set shift button to {:?} on profile {}", button, hw);
+                }
                 refresh_hw_profile_cache(ctrl, hw);
                 IpcResponse::Ok
             } else {
@@ -1251,7 +1293,11 @@ fn handle_ipc_request(
                 }
                 if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
                     gip.unlock();
-                    xbelite2_gip::profile::remap_paddles(&mut gip, idx, &[(paddle as usize, target_btn)]);
+                    let hw_prof = &ctrl.hw_cache.profiles[idx];
+                    let page_a = xbelite2_gip::types::PROFILE_MAPPING_PAGES[idx][0];
+                    xbelite2_gip::profile::write_paddle_from_cache(
+                        &mut gip, page_a, hw_prof.to_slot_a_bytes(), paddle as usize, target_btn);
+                    xbelite2_gip::profile::commit(&mut gip);
                     log::info!("Remapped P{} -> {} on profile {}", paddle + 1, target, hw);
                 }
                 refresh_hw_profile_cache(ctrl, hw);

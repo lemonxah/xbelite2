@@ -124,6 +124,11 @@ pub enum IpcRequest {
         device_id: String,
         brightness: u8,
     },
+    /// Set a button as the shift modifier (USB only)
+    SetShiftButton {
+        device_id: String,
+        button: String, // button name or "none" to clear
+    },
     /// Remap a paddle on the current HW profile (USB only)
     SetPaddleRemap {
         device_id: String,

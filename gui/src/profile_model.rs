@@ -227,6 +227,7 @@ enum Req {
     SetHwRemap { device_id: String, src: String, normal_dst: String, shift_dst: String },
     SetProfileBrightness { device_id: String, brightness: u8 },
     SetPaddleRemap { device_id: String, paddle: u8, target: String },
+    SetShiftButton { device_id: String, button: String },
     SetStickInversion { device_id: String, inversion_mask: u8 },
     PersistHwChanges { device_id: String },
 }
@@ -736,12 +737,14 @@ impl qobject::ProfileModel {
 
     fn set_shift_button(self: Pin<&mut Self>, btn: QString) {
         if !self.rust().is_usb { return; }
-        let hw = self.rust().hw_profile;
-        if hw < 1 || hw > 3 { return; }
-        // TODO: Write shift modifier assignment to controller
-        // The shift button config is likely stored in the profile's reserved bytes (17-27)
-        // or via a separate 0x4D sub-command. Needs a Windows capture with shift config.
-        log::info!("Set shift modifier: {} for profile {}", btn.to_string(), hw);
+        let sp = sock_path();
+        let did = self.rust().device_id.clone();
+        if !did.is_empty() {
+            let _ = ipc(&sp, &Req::SetShiftButton {
+                device_id: did,
+                button: btn.to_string(),
+            });
+        }
     }
 
     fn set_hw_remap(self: Pin<&mut Self>, src: QString, normal_dst: QString, shift_dst: QString) {

@@ -60,6 +60,38 @@ impl HwProfile {
     pub fn has_paddle_remaps(&self) -> bool {
         self.paddles != DEFAULT_FACE
     }
+
+    /// Reconstruct the raw 56-byte SlotA mapping page from cached data.
+    pub fn to_slot_a_bytes(&self) -> Vec<u8> {
+        let mut data = vec![0u8; 56];
+        data[OFF_FLAGS] = FLAGS_DEFAULT;
+        data[OFF_PADDLES..OFF_PADDLES + 4].copy_from_slice(&self.paddles);
+        data[OFF_FACE..OFF_FACE + 4].copy_from_slice(&self.face);
+        data[OFF_REMAP_EXT..OFF_REMAP_EXT + 8].copy_from_slice(&self.ext);
+        data[17..28].copy_from_slice(&self.reserved);
+        data[OFF_DEADZONES..OFF_DEADZONES + 4].copy_from_slice(&self.deadzones);
+        data[OFF_BRIGHTNESS] = self.brightness;
+        if let Some((r, g, b)) = self.color {
+            data[OFF_COLOR_FLAG] = 0x00;
+            data[OFF_COLOR_R] = r;
+            data[OFF_COLOR_G] = g;
+            data[OFF_COLOR_B] = b;
+        } else {
+            data[OFF_COLOR_FLAG] = 0xFF;
+        }
+        data[OFF_VIBRATION] = self.vibration.0;
+        data[OFF_VIBRATION + 1] = self.vibration.1;
+        data
+    }
+
+    /// Reconstruct the raw 56-byte SlotB mapping page from cached data.
+    pub fn to_slot_b_bytes(&self) -> Vec<u8> {
+        let mut data = self.to_slot_a_bytes();
+        // SlotB uses shift_face and shift_ext instead of face/ext
+        data[OFF_FACE..OFF_FACE + 4].copy_from_slice(&self.shift_face);
+        data[OFF_REMAP_EXT..OFF_REMAP_EXT + 8].copy_from_slice(&self.shift_ext);
+        data
+    }
 }
 
 /// Read all 3 hardware profiles from the controller (USB only) and return the cache.

@@ -20,7 +20,7 @@ pub fn write_page(dev: &mut GipDevice, page: u8, data: &[u8]) {
     let mut pkt = vec![0x4D, 0x10, seq, (3 + data.len()) as u8, 0x01, page, data.len() as u8];
     pkt.extend_from_slice(data);
     let _ = dev.send(&pkt);
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    std::thread::sleep(std::time::Duration::from_millis(100));
 }
 
 /// Full unlock dance before writing profile pages.
@@ -43,9 +43,12 @@ pub fn begin_write(dev: &mut GipDevice) {
     dev.drain();
 }
 
-/// Commit written profile data — sends POWER to reload profile.
+/// Commit written profile data.
+/// Re-init extended reports to ensure controller applies changes, then drain stale responses.
 pub fn commit(dev: &mut GipDevice) {
-    let _ = dev.send_cmd(0x05, 0x20, &[0x05]);
+    dev.init_extended();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    dev.drain();
 }
 
 /// Read the mapping page for a profile (0-indexed) and slot (0=A/normal, 1=B/shift).
@@ -89,6 +92,58 @@ fn apply_remap_to_data(data: &mut Vec<u8>, from: GipButton, to: GipButton) {
 }
 
 // --- Public remap functions ---
+
+/// Set or clear the shift modifier button using cached data (avoids read conflicts).
+/// When set, removes the button from ext[] (shifted up, 0x00 at end) and sets flags bit 0.
+/// `cached_data` should be the raw 56 bytes from the hw_profile cache.
+pub fn set_shift_button_from_cache(dev: &mut GipDevice, profile: usize, button: Option<GipButton>, cached_slot_a: &[u8], cached_slot_b: &[u8]) {
+    for (slot, cached) in [(0, cached_slot_a), (1, cached_slot_b)] {
+        let page = PROFILE_MAPPING_PAGES[profile][slot];
+        let mut data = cached.to_vec();
+        if data.len() < 56 { continue; }
+
+        match button {
+            Some(btn) => {
+                let btn_code = btn.code();
+                if let Some(slot_idx) = ext_slot_for_button(btn_code) {
+                    let ext_start = OFF_REMAP_EXT;
+                    for i in slot_idx..7 {
+                        data[ext_start + i] = data[ext_start + i + 1];
+                    }
+                    data[ext_start + 7] = 0x00;
+                }
+                data[OFF_FLAGS] = (data[OFF_FLAGS] & !0x01) | 0x01;
+            }
+            None => {
+                data[OFF_REMAP_EXT..OFF_REMAP_EXT + 8].copy_from_slice(&DEFAULT_EXT);
+                data[OFF_FLAGS] &= !0x01;
+            }
+        }
+
+        write_page(dev, page, &data);
+    }
+    commit(dev);
+}
+
+/// Write a remap using cached data (avoids read conflicts with daemon input).
+pub fn write_remap_from_cache(dev: &mut GipDevice, page: u8, mut data: Vec<u8>, from: GipButton, to: GipButton) {
+    let fc = from.code();
+    let tc = to.code();
+    if fc >= 0x04 && fc <= 0x07 {
+        data[OFF_FACE + (fc - 0x04) as usize] = tc;
+    } else if let Some(slot) = ext_slot_for_button(fc) {
+        data[OFF_REMAP_EXT + slot] = tc;
+    }
+    write_page(dev, page, &data);
+}
+
+/// Write a paddle remap using cached data.
+pub fn write_paddle_from_cache(dev: &mut GipDevice, page: u8, mut data: Vec<u8>, paddle_idx: usize, to: GipButton) {
+    if paddle_idx < 4 {
+        data[OFF_PADDLES + paddle_idx] = to.code();
+    }
+    write_page(dev, page, &data);
+}
 
 /// Remap buttons in normal mode (SlotA).
 pub fn remap_buttons(dev: &mut GipDevice, profile: usize, remaps: &[(GipButton, GipButton)]) {

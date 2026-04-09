@@ -26,8 +26,8 @@ Item {
             "P1": true, "P2": true, "P3": true, "P4": true
         })
 
-    readonly property bool selectedIsPaddle: selectedButton.startsWith("P") && selectedButton.length <= 2
     readonly property var paddleIndex: ({"P1": 0, "P2": 1, "P3": 2, "P4": 3})
+    readonly property bool selectedIsPaddle: selectedButton in paddleIndex
 
     // Target buttons for remapping (what a button can be remapped TO)
     readonly property var remapTargets: ["A", "B", "X", "Y", "DUp", "DDown", "DLeft", "DRight", "LB", "RB", "L Stick", "R Stick"]
@@ -88,9 +88,7 @@ Item {
     property string shiftButton: "" // Which button is the shift modifier (from hw_profile)
 
     onSelectedButtonChanged: {
-        updateDropdowns();
-        // Sync shift modifier checkbox with actual shift button
-        shiftModifierCheck.checked = (selectedButton !== "" && selectedButton === shiftButton);
+        refreshRemaps()
     }
     property var hwRemaps: ({})  // parsed from get_hw_profile_info()
 
@@ -158,14 +156,29 @@ Item {
         var src = selectedButton
         var normalBtn = normalTarget.currentIndex === 0 ? src : remapTargets[normalTarget.currentIndex - 1]
         var shiftBtn = shiftTarget.currentIndex === 0 ? src : remapTargets[shiftTarget.currentIndex - 1]
-        profileModel.set_hw_remap(src, normalBtn, shiftBtn)
+
+        if (selectedIsPaddle) {
+            // Paddle: normal = paddle remap, shift = paddle shift remap
+            var pi = paddleIndex[src]
+            profileModel.set_paddle_remap(pi, normalBtn)
+            // TODO: shift paddle remap via SlotB
+        } else {
+            profileModel.set_hw_remap(src, normalBtn, shiftBtn)
+        }
+
         // Optimistic update
         if (!hwRemaps.normal) hwRemaps.normal = {}
         if (!hwRemaps.shift) hwRemaps.shift = {}
-        if (normalBtn === src) delete hwRemaps.normal[src]
-        else hwRemaps.normal[src] = normalBtn
-        if (shiftBtn === src) delete hwRemaps.shift[src]
-        else hwRemaps.shift[src] = shiftBtn
+        if (!hwRemaps.paddles) hwRemaps.paddles = {}
+        if (selectedIsPaddle) {
+            if (normalBtn === src) delete hwRemaps.paddles[src]
+            else hwRemaps.paddles[src] = normalBtn
+        } else {
+            if (normalBtn === src) delete hwRemaps.normal[src]
+            else hwRemaps.normal[src] = normalBtn
+            if (shiftBtn === src) delete hwRemaps.shift[src]
+            else hwRemaps.shift[src] = shiftBtn
+        }
         remapVersion++
     }
 
@@ -196,9 +209,9 @@ Item {
                     sel: canEdit && selectedButton === modelData
                     pressed: isBtnPressed(modelData)
                     accent: (modelData === "P3" || modelData === "P4") ? "#e67e22" : "#ccc"
-                    onClicked: if (canEdit)
+                    onClicked: if (canEdit && modelData in remappableButtons)
                         selectedButton = modelData
-                    clickable: canEdit
+                    clickable: canEdit && modelData in remappableButtons
                     remappable: modelData in remappableButtons
                     normalRemap: getNormalRemap(modelData)
                     shiftRemap: getShiftRemap(modelData)
@@ -276,9 +289,9 @@ Item {
                             return "#ccc";
                         }
                     }
-                    onClicked: if (canEdit)
+                    onClicked: if (canEdit && modelData in remappableButtons)
                         selectedButton = modelData
-                    clickable: canEdit
+                    clickable: canEdit && modelData in remappableButtons
                     remappable: modelData in remappableButtons
                     normalRemap: getNormalRemap(modelData)
                     shiftRemap: getShiftRemap(modelData)
@@ -317,34 +330,13 @@ Item {
                 textFormat: Text.RichText
             }
 
-            // Paddle remap — single dropdown
-            ColumnLayout {
-                spacing: 2
-                visible: selectedIsRemappable && selectedIsPaddle
-                Label { text: "Paddle outputs"; color: "#e67e22"; font.pixelSize: 9 }
-                ComboBox {
-                    id: paddleTarget; Layout.preferredWidth: 140
-                    model: remapTargets
-                    onActivated: {
-                        var idx = paddleIndex[selectedButton]
-                        if (idx !== undefined) {
-                            profileModel.set_paddle_remap(idx, remapTargets[currentIndex])
-                        }
-                    }
-                    background: Rectangle { color: "#2a1a00"; radius: 4; border.color: "#e67e22" }
-                    contentItem: Text {
-                        text: paddleTarget.displayText; color: "#e67e22"
-                        leftPadding: 8; verticalAlignment: Text.AlignVCenter; font.pixelSize: 12
-                    }
-                }
-            }
-
-            // Shift modifier checkbox (not for paddles)
+            // Shift modifier checkbox
             CheckBox {
                 id: shiftModifierCheck
-                visible: selectedIsRemappable && !selectedIsPaddle
+                visible: selectedIsRemappable
                 text: "SHIFT MODIFIER"
-                checked: false
+                enabled: false // Display-only — shift button is set via Xbox Accessories on Windows
+                checked: (selectedButton !== "" && selectedButton === shiftButton)
                 contentItem: Text {
                     text: parent.text
                     color: parent.checked ? "#e67e22" : "#888"
@@ -374,7 +366,7 @@ Item {
             // Normal mode remap
             ColumnLayout {
                 spacing: 2
-                visible: selectedIsRemappable && !selectedIsPaddle && !shiftModifierCheck.checked
+                visible: selectedIsRemappable && !shiftModifierCheck.checked
                 Label {
                     text: "Normal"
                     color: "#888"
@@ -404,7 +396,7 @@ Item {
             // Shift mode remap
             ColumnLayout {
                 spacing: 2
-                visible: selectedIsRemappable && !selectedIsPaddle && !shiftModifierCheck.checked
+                visible: selectedIsRemappable && !shiftModifierCheck.checked
                 Label {
                     text: "Shift"
                     color: "#9b59b6"
@@ -433,34 +425,35 @@ Item {
 
             // Shift modifier info
             Label {
-                visible: selectedIsRemappable && !selectedIsPaddle && shiftModifierCheck.checked
+                visible: selectedIsRemappable && shiftModifierCheck.checked
                 text: "Hold <b>" + selectedButton + "</b> to activate shift remaps"
                 color: "#e67e22"
                 font.pixelSize: 12
                 textFormat: Text.RichText
             }
 
-            Button {
-                visible: selectedIsRemappable && !selectedIsPaddle && shiftModifierCheck.checked
-                text: "Set Shift"
-                onClicked: profileModel.set_shift_button(selectedButton)
-                background: Rectangle {
-                    color: parent.hovered ? "#f39c12" : "#e67e22"
-                    radius: 4
-                }
-                contentItem: Text {
-                    text: parent.text; color: "white"; font.bold: true
-                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
-                }
-            }
 
             Button {
-                visible: selectedIsRemappable && !selectedIsPaddle && !shiftModifierCheck.checked
+                visible: selectedIsRemappable && !shiftModifierCheck.checked
                 text: "Reset"
                 onClicked: {
                     normalTarget.currentIndex = 0
                     shiftTarget.currentIndex = 0
-                    applyCurrentRemap()
+                    // Write identity mapping (button maps to itself)
+                    var src = selectedButton
+                    if (selectedIsPaddle) {
+                        var pi = paddleIndex[src]
+                        // Default paddle mapping: P1→A, P2→B, P3→X, P4→Y
+                        var defaults = ["A", "B", "X", "Y"]
+                        profileModel.set_paddle_remap(pi, defaults[pi])
+                    } else {
+                        profileModel.set_hw_remap(src, src, src)
+                    }
+                    // Clear optimistic state
+                    if (hwRemaps.normal) delete hwRemaps.normal[src]
+                    if (hwRemaps.shift) delete hwRemaps.shift[src]
+                    if (hwRemaps.paddles) delete hwRemaps.paddles[src]
+                    remapVersion++
                 }
                 background: Rectangle {
                     color: parent.hovered ? "#e74c3c" : "#333"
