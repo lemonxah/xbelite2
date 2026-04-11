@@ -43,16 +43,20 @@ pub fn begin_write(dev: &mut GipDevice) {
     dev.drain();
 }
 
-/// Commit written profile data — sends POWER reload to persist changes,
-/// then re-enables extended reports (fire-and-forget to avoid ring buffer conflicts).
+/// Commit written profile data — re-inits extended reports and sends persist command.
+/// Uses fire-and-forget sends to avoid ring buffer response conflicts with the daemon's
+/// read loop (vendor_cmd would block waiting for a response the daemon steals).
 pub fn commit(dev: &mut GipDevice) {
-    let _ = dev.send_cmd(0x05, 0x20, &[0x05]);
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    // Re-enable extended reports (0x0C profile switch etc.) after power reload.
-    // Send fire-and-forget — vendor_cmd would block waiting for a response
-    // that the daemon's read loop will steal from the shared ring buffer.
-    let _ = dev.send(&[0x4D, 0x10, 0xFE, 0x02, 0x07, 0x00]);
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    use std::sync::atomic::{AtomicU8, Ordering};
+    static COMMIT_SEQ: AtomicU8 = AtomicU8::new(0xE0);
+    // Re-init extended reports (equivalent to old init_extended / vendor_cmd [0x07, 0x00])
+    let seq = COMMIT_SEQ.fetch_add(1, Ordering::Relaxed);
+    let _ = dev.send(&[0x4D, 0x10, seq, 0x02, 0x07, 0x00]);
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    // Persist/unlock command (equivalent to old vendor_cmd [0x03])
+    let seq = COMMIT_SEQ.fetch_add(1, Ordering::Relaxed);
+    let _ = dev.send(&[0x4D, 0x10, seq, 0x01, 0x03]);
+    std::thread::sleep(std::time::Duration::from_millis(150));
     dev.drain();
 }
 
