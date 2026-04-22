@@ -809,6 +809,7 @@ dependencies = [
 name = "xbe2-rw"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "xbelite2-gip",
 ]
 

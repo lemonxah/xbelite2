@@ -133,6 +133,41 @@ pub enum IpcRequest {
     PersistHwChanges {
         device_id: String,
     },
+    /// Set dead zones for current hardware profile (USB only)
+    SetDeadzones {
+        device_id: String,
+        lstick: u8,
+        rstick: u8,
+        ltrig: u8,
+        rtrig: u8,
+    },
+    /// Set vibration intensity for current hardware profile (USB only)
+    SetVibration {
+        device_id: String,
+        left: u8,
+        right: u8,
+    },
+    /// Set stick curves for current hardware profile (USB only)
+    SetCurves {
+        device_id: String,
+        lx: [u8; 6],
+        ly: [u8; 6],
+        rx: [u8; 6],
+        ry: [u8; 6],
+    },
+    /// Reset button remaps to default for current hardware profile (USB only)
+    ResetRemaps {
+        device_id: String,
+    },
+    /// Fully reset current hardware profile to factory defaults (USB only)
+    ResetProfile {
+        device_id: String,
+    },
+    /// Remap paddles on current hardware profile (USB only)
+    RemapPaddles {
+        device_id: String,
+        remaps: Vec<(u8, String)>, // (paddle_idx 0-3, button_name)
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -1368,6 +1368,138 @@ fn handle_ipc_request(
                 IpcResponse::Error { message: format!("Device {device_id} not found") }
             }
         }
+        IpcRequest::SetDeadzones { device_id, lstick, rstick, ltrig, rtrig } => {
+            if let Some(ctrl) = controllers.get_mut(&device_id) {
+                if !matches!(&ctrl.source, InputSource::UsbMiscDev { .. }) {
+                    return IpcResponse::Error { message: "Deadzone change requires USB".into() };
+                }
+                let hw = ctrl.prev_state.hw_profile;
+                if hw < 1 || hw > 3 {
+                    return IpcResponse::Error { message: "Not on an editable profile".into() };
+                }
+                let idx = (hw - 1) as usize;
+                if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
+                    gip.unlock();
+                    xbelite2_gip::profile::set_deadzones(&mut gip, idx, lstick, rstick, ltrig, rtrig);
+                    ctrl.hw_cache.profiles[idx].deadzones = [lstick, rstick, ltrig, rtrig];
+                    let cache_dir = std::path::PathBuf::from("/var/cache/xbelite2");
+                    let _ = hw_profile::save_to(&ctrl.hw_cache, &cache_dir);
+                    log::info!("Set profile {} deadzones: LS={} RS={} LT={} RT={}", hw, lstick, rstick, ltrig, rtrig);
+                }
+                IpcResponse::Ok
+            } else {
+                IpcResponse::Error { message: format!("Device {device_id} not found") }
+            }
+        }
+        IpcRequest::SetVibration { device_id, left, right } => {
+            if let Some(ctrl) = controllers.get_mut(&device_id) {
+                if !matches!(&ctrl.source, InputSource::UsbMiscDev { .. }) {
+                    return IpcResponse::Error { message: "Vibration change requires USB".into() };
+                }
+                let hw = ctrl.prev_state.hw_profile;
+                if hw < 1 || hw > 3 {
+                    return IpcResponse::Error { message: "Not on an editable profile".into() };
+                }
+                let idx = (hw - 1) as usize;
+                if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
+                    gip.unlock();
+                    xbelite2_gip::profile::set_vibration(&mut gip, idx, left, right);
+                    ctrl.hw_cache.profiles[idx].vibration = (left, right);
+                    let cache_dir = std::path::PathBuf::from("/var/cache/xbelite2");
+                    let _ = hw_profile::save_to(&ctrl.hw_cache, &cache_dir);
+                    log::info!("Set profile {} vibration: left={} right={}", hw, left, right);
+                }
+                IpcResponse::Ok
+            } else {
+                IpcResponse::Error { message: format!("Device {device_id} not found") }
+            }
+        }
+        IpcRequest::SetCurves { device_id, lx, ly, rx, ry } => {
+            if let Some(ctrl) = controllers.get_mut(&device_id) {
+                if !matches!(&ctrl.source, InputSource::UsbMiscDev { .. }) {
+                    return IpcResponse::Error { message: "Curves change requires USB".into() };
+                }
+                let hw = ctrl.prev_state.hw_profile;
+                if hw < 1 || hw > 3 {
+                    return IpcResponse::Error { message: "Not on an editable profile".into() };
+                }
+                let idx = (hw - 1) as usize;
+                if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
+                    gip.unlock();
+                    xbelite2_gip::profile::set_curves(&mut gip, idx, lx, ly, rx, ry);
+                    log::info!("Set profile {} curves", hw);
+                }
+                IpcResponse::Ok
+            } else {
+                IpcResponse::Error { message: format!("Device {device_id} not found") }
+            }
+        }
+        IpcRequest::ResetRemaps { device_id } => {
+            if let Some(ctrl) = controllers.get_mut(&device_id) {
+                if !matches!(&ctrl.source, InputSource::UsbMiscDev { .. }) {
+                    return IpcResponse::Error { message: "Remap reset requires USB".into() };
+                }
+                let hw = ctrl.prev_state.hw_profile;
+                if hw < 1 || hw > 3 {
+                    return IpcResponse::Error { message: "Not on an editable profile".into() };
+                }
+                let idx = (hw - 1) as usize;
+                if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
+                    gip.unlock();
+                    xbelite2_gip::profile::reset_remaps(&mut gip, idx);
+                    log::info!("Reset profile {} remaps to default", hw);
+                }
+                IpcResponse::Ok
+            } else {
+                IpcResponse::Error { message: format!("Device {device_id} not found") }
+            }
+        }
+        IpcRequest::ResetProfile { device_id } => {
+            if let Some(ctrl) = controllers.get_mut(&device_id) {
+                if !matches!(&ctrl.source, InputSource::UsbMiscDev { .. }) {
+                    return IpcResponse::Error { message: "Profile reset requires USB".into() };
+                }
+                let hw = ctrl.prev_state.hw_profile;
+                if hw < 1 || hw > 3 {
+                    return IpcResponse::Error { message: "Not on an editable profile".into() };
+                }
+                let idx = (hw - 1) as usize;
+                if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
+                    gip.unlock();
+                    xbelite2_gip::profile::reset_profile(&mut gip, idx);
+                    log::info!("Fully reset profile {} to factory defaults", hw);
+                }
+                IpcResponse::Ok
+            } else {
+                IpcResponse::Error { message: format!("Device {device_id} not found") }
+            }
+        }
+        IpcRequest::RemapPaddles { device_id, remaps } => {
+            if let Some(ctrl) = controllers.get_mut(&device_id) {
+                if !matches!(&ctrl.source, InputSource::UsbMiscDev { .. }) {
+                    return IpcResponse::Error { message: "Paddle remap requires USB".into() };
+                }
+                let hw = ctrl.prev_state.hw_profile;
+                if hw < 1 || hw > 3 {
+                    return IpcResponse::Error { message: "Not on an editable profile".into() };
+                }
+                let idx = (hw - 1) as usize;
+                let button_remaps: Vec<(usize, xbelite2_gip::types::GipButton)> = remaps
+                    .iter()
+                    .filter_map(|(pidx, name)| {
+                        xbelite2_gip::types::GipButton::from_name(name).map(|btn| (*pidx as usize, btn))
+                    })
+                    .collect();
+                if let Ok(mut gip) = xbelite2_gip::transport::GipDevice::open_usb() {
+                    gip.unlock();
+                    xbelite2_gip::profile::remap_paddles(&mut gip, idx, &button_remaps);
+                    log::info!("Remapped paddles on profile {}", hw);
+                }
+                IpcResponse::Ok
+            } else {
+                IpcResponse::Error { message: format!("Device {device_id} not found") }
+            }
+        }
     }
 }
 

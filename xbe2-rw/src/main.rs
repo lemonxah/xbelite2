@@ -2,77 +2,51 @@ use xbelite2_gip::transport::GipDevice;
 use xbelite2_gip::types::*;
 use xbelite2_gip::{led, name, profile, rumble};
 
+mod ipc;
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).map(|s| s.as_str()).unwrap_or("help");
 
-    let mut dev = GipDevice::open_usb().unwrap_or_else(|e| {
-        eprintln!("Failed to open /dev/xbelite2: {e}");
-        eprintln!("Is the controller connected and xbelite2 module loaded?");
-        std::process::exit(1);
-    });
-    dev.unlock();
+    let is_write_op = match mode {
+        "read" | "profiles" | "profile" | "help" => false,
+        "name" => args.get(2).is_some(),
+        _ => true,
+    };
+    
+    let use_ipc = is_write_op && ipc::is_daemon_running();
+    
+    if !use_ipc {
+        let mut dev = GipDevice::open_usb().unwrap_or_else(|e| {
+            eprintln!("Failed to open /dev/xbelite2: {e}");
+            eprintln!("Is the controller connected and xbelite2 module loaded?");
+            std::process::exit(1);
+        });
+        dev.unlock();
+        run_direct(mode, &args, &mut dev);
+    } else {
+        run_via_ipc(mode, &args);
+    }
+}
 
-    match mode {
-        "read" => cmd_read(&mut dev),
-        "name" => match args.get(2) {
-            Some(n) => cmd_write_name(&mut dev, n),
-            None => cmd_read_name(&mut dev),
-        },
-        "profiles" => cmd_read_profiles(&mut dev),
-        "profile" => {
-            let idx = parse_profile_idx(&args, 2);
-            cmd_read_profile(&mut dev, idx);
-        }
+fn run_via_ipc(mode: &str, args: &[String]) {
+    let result = match mode {
         "color" => {
-            let idx = parse_profile_idx(&args, 2);
+            let idx = parse_profile_idx(args, 2);
             let (r, g, b) = parse_color(args.get(3).map(|s| s.as_str()).unwrap_or_else(|| {
                 eprintln!("Usage: xbe2-rw color <1-3> <RRGGBB>");
                 std::process::exit(1);
             }));
-            profile::set_color(&mut dev, idx, r, g, b);
-            led::set_color(&mut dev, r, g, b);
-            println!("Profile {} color set to #{r:02x}{g:02x}{b:02x}", idx + 1);
+            ipc::set_profile_color(idx, r, g, b)
+                .map(|_| println!("Profile {} color set to #{r:02x}{g:02x}{b:02x}", idx + 1))
         }
-        "remap" => {
-            let idx = parse_profile_idx(&args, 2);
-            if args.len() < 4 {
-                eprintln!("Usage: xbe2-rw remap <1-3> <FROM=TO> ...");
-                eprintln!("  Buttons: A B X Y LB RB LT RT DUp DDown DLeft DRight");
-                std::process::exit(1);
-            }
-            let remaps = parse_remaps(&args[3..]);
-            profile::remap_buttons(&mut dev, idx, &remaps);
-            println!("Profile {} remapped:", idx + 1);
-            for (from, to) in &remaps {
-                println!("  {}={}", from.name(), to.name());
-            }
-        }
-        "remap-shift" => {
-            let idx = parse_profile_idx(&args, 2);
-            if args.len() < 4 {
-                eprintln!("Usage: xbe2-rw remap-shift <1-3> <FROM=TO> ...");
-                std::process::exit(1);
-            }
-            let remaps = parse_remaps(&args[3..]);
-            profile::remap_shift(&mut dev, idx, &remaps);
-            println!("Profile {} shift remapped:", idx + 1);
-            for (from, to) in &remaps {
-                println!("  {}={}", from.name(), to.name());
-            }
-        }
-        "remap-reset" => {
-            let idx = parse_profile_idx(&args, 2);
-            profile::reset_remaps(&mut dev, idx);
-            println!("Profile {} remapping reset to default", idx + 1);
-        }
-        "reset" => {
-            let idx = parse_profile_idx(&args, 2);
-            profile::reset_profile(&mut dev, idx);
-            println!("Profile {} fully reset to factory default", idx + 1);
+        "name" => {
+            let new_name = args.get(2).expect("Usage: xbe2-rw name <new-name>");
+            ipc::set_device_name(new_name)
+                .map(|_| println!("Device name set to: {}", new_name))
         }
         "deadzone" => {
-            let idx = parse_profile_idx(&args, 2);
+            let idx = parse_profile_idx(args, 2);
             if args.len() < 7 {
                 eprintln!("Usage: xbe2-rw deadzone <1-3> <lstick> <rstick> <ltrigger> <rtrigger>");
                 std::process::exit(1);
@@ -82,23 +56,143 @@ fn main() {
                 eprintln!("Need 4 numeric values");
                 std::process::exit(1);
             }
-            profile::set_deadzones(&mut dev, idx, vals[0], vals[1], vals[2], vals[3]);
+            ipc::set_deadzones(idx, vals[0], vals[1], vals[2], vals[3])
+                .map(|_| println!(
+                    "Profile {} dead zones: LS={} RS={} LT={} RT={}",
+                    idx + 1, vals[0], vals[1], vals[2], vals[3]
+                ))
+        }
+        "vibration" => {
+            let idx = parse_profile_idx(args, 2);
+            let left: u8 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(48);
+            let right: u8 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(48);
+            ipc::set_vibration(idx, left, right)
+                .map(|_| println!("Profile {} vibration: left={left} right={right}", idx + 1))
+        }
+        "remap" => {
+            let idx = parse_profile_idx(args, 2);
+            if args.len() < 4 {
+                eprintln!("Usage: xbe2-rw remap <1-3> <FROM=TO> ...");
+                eprintln!("  Buttons: A B X Y LB RB LT RT DUp DDown DLeft DRight");
+                std::process::exit(1);
+            }
+            let remaps = parse_remaps(&args[3..]);
+            ipc::remap_buttons(idx, &remaps).map(|_| {
+                println!("Profile {} remapped:", idx + 1);
+                for (from, to) in &remaps {
+                    println!("  {}={}", from.name(), to.name());
+                }
+            })
+        }
+        "remap-reset" => {
+            let idx = parse_profile_idx(args, 2);
+            ipc::reset_remaps(idx)
+                .map(|_| println!("Profile {} remapping reset to default", idx + 1))
+        }
+        "reset" => {
+            let idx = parse_profile_idx(args, 2);
+            ipc::reset_profile(idx)
+                .map(|_| println!("Profile {} fully reset to factory default", idx + 1))
+        }
+        _ => {
+            eprintln!("Command '{}' not supported via IPC yet. Stop daemon to use direct mode.", mode);
+            std::process::exit(1);
+        }
+    };
+    
+    if let Err(e) = result {
+        eprintln!("IPC error: {}", e);
+        std::process::exit(1);
+    }
+}
+
+fn run_direct(mode: &str, args: &[String], dev: &mut GipDevice) {
+    match mode {
+        "read" => cmd_read(dev),
+        "name" => match args.get(2) {
+            Some(n) => cmd_write_name(dev, n),
+            None => cmd_read_name(dev),
+        },
+        "profiles" => cmd_read_profiles(dev),
+        "profile" => {
+            let idx = parse_profile_idx(args, 2);
+            cmd_read_profile(dev, idx);
+        }
+        "color" => {
+            let idx = parse_profile_idx(args, 2);
+            let (r, g, b) = parse_color(args.get(3).map(|s| s.as_str()).unwrap_or_else(|| {
+                eprintln!("Usage: xbe2-rw color <1-3> <RRGGBB>");
+                std::process::exit(1);
+            }));
+            profile::set_color(dev, idx, r, g, b);
+            led::set_color(dev, r, g, b);
+            println!("Profile {} color set to #{r:02x}{g:02x}{b:02x}", idx + 1);
+        }
+        "remap" => {
+            let idx = parse_profile_idx(args, 2);
+            if args.len() < 4 {
+                eprintln!("Usage: xbe2-rw remap <1-3> <FROM=TO> ...");
+                eprintln!("  Buttons: A B X Y LB RB LT RT DUp DDown DLeft DRight");
+                std::process::exit(1);
+            }
+            let remaps = parse_remaps(&args[3..]);
+            profile::remap_buttons(dev, idx, &remaps);
+            println!("Profile {} remapped:", idx + 1);
+            for (from, to) in &remaps {
+                println!("  {}={}", from.name(), to.name());
+            }
+        }
+        "remap-shift" => {
+            let idx = parse_profile_idx(args, 2);
+            if args.len() < 4 {
+                eprintln!("Usage: xbe2-rw remap-shift <1-3> <FROM=TO> ...");
+                std::process::exit(1);
+            }
+            let remaps = parse_remaps(&args[3..]);
+            profile::remap_shift(dev, idx, &remaps);
+            println!("Profile {} shift remapped:", idx + 1);
+            for (from, to) in &remaps {
+                println!("  {}={}", from.name(), to.name());
+            }
+        }
+        "remap-reset" => {
+            let idx = parse_profile_idx(args, 2);
+            profile::reset_remaps(dev, idx);
+            println!("Profile {} remapping reset to default", idx + 1);
+        }
+        "reset" => {
+            let idx = parse_profile_idx(args, 2);
+            profile::reset_profile(dev, idx);
+            println!("Profile {} fully reset to factory default", idx + 1);
+        }
+        "deadzone" => {
+            let idx = parse_profile_idx(args, 2);
+            if args.len() < 7 {
+                eprintln!("Usage: xbe2-rw deadzone <1-3> <lstick> <rstick> <ltrigger> <rtrigger>");
+                std::process::exit(1);
+            }
+            let vals: Vec<u8> = args[3..7].iter().filter_map(|s| s.parse().ok()).collect();
+            if vals.len() != 4 {
+                eprintln!("Need 4 numeric values");
+                std::process::exit(1);
+            }
+            profile::set_deadzones(dev, idx, vals[0], vals[1], vals[2], vals[3]);
             println!(
                 "Profile {} dead zones: LS={} RS={} LT={} RT={}",
                 idx + 1, vals[0], vals[1], vals[2], vals[3]
             );
         }
         "vibration" => {
-            let idx = parse_profile_idx(&args, 2);
+            let idx = parse_profile_idx(args, 2);
             let left: u8 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(48);
             let right: u8 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(48);
-            profile::set_vibration(&mut dev, idx, left, right);
+            profile::set_vibration(dev, idx, left, right);
             println!("Profile {} vibration: left={left} right={right}", idx + 1);
         }
         "curves" => {
-            let idx = parse_profile_idx(&args, 2);
+            let idx = parse_profile_idx(args, 2);
             if args.get(3).map(|s| s.as_str()) == Some("reset") {
-                profile::reset_curves(&mut dev, idx);
+                profile::reset_curves(dev, idx);
                 println!("Profile {} curves reset to linear", idx + 1);
             } else {
                 eprintln!("Usage: xbe2-rw curves <1-3> reset");
@@ -110,11 +204,11 @@ fn main() {
                 eprintln!("Usage: xbe2-rw led <RRGGBB>");
                 std::process::exit(1);
             }));
-            led::set_color(&mut dev, r, g, b);
+            led::set_color(dev, r, g, b);
             println!("LED set to #{r:02x}{g:02x}{b:02x} (not saved)");
         }
         "led-off" => {
-            led::off(&mut dev);
+            led::off(dev);
             println!("LED returned to profile color");
         }
         "rumble" => {
@@ -126,11 +220,11 @@ fn main() {
                 eprintln!("Usage: xbe2-rw rumble <left> <right> [ltrigger] [rtrigger]");
                 std::process::exit(1);
             }
-            rumble::set(&mut dev, lm, rm, lt, rt);
+            rumble::set(dev, lm, rm, lt, rt);
             println!("Rumble: LM={lm} RM={rm} LT={lt} RT={rt}");
         }
         "rumble-stop" => {
-            rumble::stop(&mut dev);
+            rumble::stop(dev);
             println!("Rumble stopped");
         }
         _ => print_usage(),

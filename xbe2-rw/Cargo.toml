@@ -11,3 +11,4 @@ path = "src/main.rs"
 
 [dependencies]
 xbelite2-gip = { path = "../gip" }
+serde_json = "1.0"
