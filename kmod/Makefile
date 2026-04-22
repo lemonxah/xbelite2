@@ -1,7 +1,7 @@
 KDIR ?= /lib/modules/$(shell uname -r)/build
 
 all:
-	$(MAKE) -C $(KDIR) M=$(shell pwd) modules
+	$(MAKE) -C $(KDIR) M=$(shell pwd) CC=clang CXX=clang++ LD=ld.lld modules
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(shell pwd) clean
