@@ -412,7 +412,16 @@ err1: usb_put_dev(udev); kfree(d); return ret;
 static void usb_disconnect(struct usb_interface *intf)
 {
 	struct xbelite2_usb *d = usb_get_intfdata(intf);
+	int a;
+	static const u8 usb_to_bt[] = {0x05, 0x20, 0x00, 0x0f, 0x00};
+	
 	if (!d) return;
+	
+	if (d->running && d->udev) {
+		usb_interrupt_msg(d->udev, usb_sndintpipe(d->udev, 0x02),
+				  (void *)usb_to_bt, sizeof(usb_to_bt), &a, 1000);
+	}
+	
 	d->running = false;
 	g_usb = NULL;
 	xbelite2_on_usb_disconnect();

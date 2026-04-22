@@ -328,6 +328,14 @@ On USB connect, the controller sends a HELLO (0x02). The host should respond wit
 After this the controller sends extended 0x20 (51-byte) and 0x0C (21-byte) input reports.
 The keepalive (rumble stop command `09 00 00 09 00 0F 00 00 00 00 FF 00 EB`) should be sent every ~2 seconds to prevent HELLO re-sends.
 
+## Disconnect Sequence
+
+On USB disconnect, to allow automatic Bluetooth reconnection:
+
+1. USB→BT transition: `05 20 00 0F 00` (reverse of BT→USB, allows BT reconnect without re-pairing)
+
+Without this command, the controller firmware remains in USB mode after cable unplug and requires full Bluetooth re-pairing.
+
 ## Write Sequence
 
 Before any profile, LED, or name writes:
