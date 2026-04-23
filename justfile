@@ -8,7 +8,7 @@ current:
 # Bump version: just bump 0.3.0
 bump new_version:
     # Cargo.toml + Cargo.lock
-    sed -i '0,/^version = ".*"/s//version = "{{new_version}}"/' Cargo.toml
+    find . -type f -name "Cargo.toml" -exec sed -i '0,/^version = ".*"/s//version = "{{new_version}}"/' {} +
     cargo update --workspace
     # DKMS
     sed -i 's/^PACKAGE_VERSION=.*/PACKAGE_VERSION="{{new_version}}"/' kmod/dkms.conf
