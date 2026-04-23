@@ -75,4 +75,5 @@ aur-publish new_version:
     cp pkg/xbelite2.install {{aur_dir}}/xbelite2.install
     sed -i 's/^pkgver=.*/pkgver={{new_version}}/' {{aur_dir}}/PKGBUILD
     cd {{aur_dir}} && makepkg --printsrcinfo > .SRCINFO
+    cd {{aur_dir}} && updpkgsums
     cd {{aur_dir}} && git commit -am "updated the version to {{new_version}}" && git push
