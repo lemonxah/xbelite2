@@ -1,132 +1,106 @@
 # xbelite2
 
-Linux userspace driver and configuration tool for the Xbox Elite Wireless Controller Series 2.
-
-![Xbox Elite Series 2](docs/elite2.png)
+Linux driver and configuration tools for the Xbox Elite Wireless Controller Series 2.
 
 ## What this does
 
-The Xbox Elite 2 has four back paddles and a hardware profile switch. On Linux, the stock drivers (`xpad`, `hid-generic`) don't expose the paddles properly over Bluetooth, and there's no way to configure button remapping, stick response curves, or trigger dead zones without the Windows Xbox Accessories app.
+The Xbox Elite 2 has four back paddles and a hardware profile switch. The stock
+Linux drivers (`xpad`, `hid-generic`, `xpadneo`) don't expose the paddles
+reliably, and there's no way to configure button remapping, stick response
+curves, or trigger dead zones without the Windows Xbox Accessories app.
 
-This project fixes that. It consists of two parts:
+This project fixes that. It consists of three parts:
 
-- **xbelite2d** — a daemon that reads raw HID reports from the controller (Bluetooth or USB), parses all inputs including paddles and the hardware profile switch, and emits a virtual gamepad via uinput with configurable input transformations
-- **xbelite2-gui** — a Qt6/QML configuration app that talks to the daemon over a Unix socket, showing live controller state and letting you edit profiles
+- **xbelite2.ko** — a kernel module that binds the Elite 2 over USB and
+  Bluetooth, registers a native Linux input device (just like `xpad`), exposes
+  the current hardware profile via sysfs, and provides a misc character device
+  (`/dev/xbelite2`) for configuration access.
+- **xbe2-rw** — a CLI tool that reads and writes the controller's hardware
+  profiles (LED color, button remaps, dead zones, stick curves, stick
+  inversion, vibration, device name, rumble test).
+- **xbelite2-gui** — a Qt6/QML configuration app that shows live controller
+  state and lets you edit profiles. It drives the same GIP protocol
+  directly — no background service required.
 
 ### How profiles work
 
-The Elite 2 has a physical profile switch with 4 positions (0-3):
+The Elite 2 has a physical profile switch with 4 positions:
 
-- **Profile 0 (Default)** — pure passthrough. All inputs go straight through to the virtual gamepad with no modifications. Use this for Steam Input or any game that handles its own bindings.
-- **Profiles 1, 2, 3** — each maps to a software profile you configure in the GUI. Button remapping, stick response curves, stick dead zones, trigger dead zones, and vibration intensity are all applied before the virtual gamepad sees the input.
+- **Profile 0 (Default)** — pure passthrough. All inputs go straight through.
+- **Profiles 1, 2, 3** — each stores a hardware configuration on the
+  controller itself: button remaps, stick curves, dead zones, LED color,
+  vibration. The controller applies them before reporting input.
 
-Profiles are stored in `~/.config/xbelite2/elite2.json` (owned by your user, not root).
+Because the profiles live on the controller's own flash, your settings travel
+with the controller between machines.
 
 ### What you can configure per profile
 
-- Button and paddle remapping (any button to any other button)
-- Stick response curves (16-point piecewise-linear, per axis)
-- Stick dead zones (per stick, 0-50%)
-- Trigger dead zones (min/max per trigger)
-- Vibration intensity (per motor: main, weak, left trigger, right trigger)
+- Button and paddle remapping (normal + shift mode)
+- Stick response curves
+- Stick dead zones (LS, RS)
+- Trigger dead zones (LT, RT)
+- Stick axis inversion (LY, RY, LX, RX)
+- LED color and brightness
+- Vibration intensity (main + weak motor, trigger rumbles)
+- Device name
 
-## Building
+## Installing
 
-### Requirements
-
-- Rust toolchain (stable)
-- Qt 6 with QtQuick/QML (`qt6-base`, `qt6-declarative`)
-- `libc` headers
-
-On Arch Linux:
+After the package installs the files:
 
 ```
-sudo pacman -S qt6-base qt6-declarative
+sudo modprobe xbelite2
+sudo usermod -aG input $USER    # log out/in to apply
 ```
 
-### Daemon
+The kernel module registers both a USB and a Bluetooth HID driver. The udev
+rule installs `/dev/xbelite2` with `GROUP=input, MODE=0660` so users in the
+`input` group can configure the controller without sudo.
+
+## Running
+
+### CLI
 
 ```
-cargo build --release
+xbe2-rw help                            # list all commands
+xbe2-rw read                            # device info + all profiles
+xbe2-rw color 1 00aaff                  # profile 1 LED → #00AAFF
+xbe2-rw remap 2 A=B Y=X                 # profile 2: swap A/B, remap Y → X
+xbe2-rw invert 1 0x0f                   # profile 1: invert all 4 stick axes
+xbe2-rw rumble 50 50                    # 500ms rumble at 50% left/right
 ```
 
 ### GUI
 
 ```
-cd gui
-cargo build --release
+xbelite2-gui
 ```
 
-## Running
+Shows live controller state, the active hardware profile, and lets you edit
+remaps / colors / inversion for profiles 1–3.
 
-### Start the daemon
-
-The daemon needs root for access to `/dev/hidraw*` and `/dev/uinput`:
-
-```
-sudo ./target/release/xbelite2d
-```
-
-Or install the systemd service:
+## Architecture
 
 ```
-sudo cp xbelite2d.service /etc/systemd/system/
-sudo cp 99-xbelite2.rules /etc/udev/rules.d/
-sudo udevadm control --reload-rules
-sudo systemctl enable --now xbelite2d
-```
-
-### Run the GUI
-
-```
-./gui/target/release/xbelite2-gui
-```
-
-The GUI connects to the daemon at `/run/xbelite2.sock`. It loads and saves profiles from `~/.config/xbelite2/`.
-
-## Technical details
-
-### Bluetooth HID report format
-
-The Elite 2 connects over BLE (PID `0x0B22`, appears as `0x028E` after kernel spoofing). The 20-byte HID report (report ID `0x01`) layout, confirmed from the actual HID descriptor and hardware testing:
-
-| Bytes | Field | Format |
-|-------|-------|--------|
-| 1-2 | Left Stick X | unsigned u16, center=32768 |
-| 3-4 | Left Stick Y | unsigned u16, center=32768 |
-| 5-6 | Right Stick X | unsigned u16, center=32768 |
-| 7-8 | Right Stick Y | unsigned u16, center=32768 |
-| 9-10 | Left Trigger | 10-bit + 6 padding, 0-1023 |
-| 11-12 | Right Trigger | 10-bit + 6 padding, 0-1023 |
-| 13 | D-pad hat | 4-bit (1-8 directions, 0=center) |
-| 14-15 | Buttons | 12 bits (A,B,X,Y,LB,RB,View,Menu,LS,RS,Xbox,Share) |
-| 16 | Share button | 1 bit + 7 padding |
-| 17 | Profile number | 0-3 |
-| 18 | Trigger mode | 4-bit + 4 padding |
-| 19 | Paddles | 4-bit (UR, LR, UL, LL) |
-
-The paddles at byte 19 report in all four hardware profiles over Bluetooth. This is the key finding that makes the whole project possible — `xpadneo` and `xpad` both suppress paddle data in profiles 1-3, but the raw HID report always contains it.
-
-### Architecture
-
-```
-Controller (BT/USB)
+Controller (USB or BT)
     |
     v
-/dev/hidraw* -----> xbelite2d (reads raw HID, grabs evdev)
-                        |
-                        |--> parse HID report
-                        |--> apply profile transforms (if profile 1-3)
-                        |--> emit to /dev/uinput virtual gamepad
-                        |
-                        |--> /run/xbelite2.sock (IPC)
-                                |
-                                v
-                          xbelite2-gui (Qt6/QML)
-                                |
-                                v
-                     ~/.config/xbelite2/elite2.json
+xbelite2.ko (kernel module)
+    |-- registers /dev/input/eventN (native input device)
+    |-- registers /dev/xbelite2     (misc char device for GIP config)
+    |-- exposes hw_profile via sysfs (auto-synced from controller)
+    |
+    +---> games see a normal Xbox gamepad
+    |
+    +---> xbe2-rw / xbelite2-gui   (open /dev/xbelite2, speak GIP)
+                    |
+                    v
+            writes profile pages to the controller's flash
 ```
+
+There is no userspace service or IPC layer — the kernel module handles input,
+and configuration tools speak directly to the controller.
 
 ## License
 

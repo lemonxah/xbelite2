@@ -1,14 +1,10 @@
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::{Path, PathBuf};
 
 use crate::transport::GipDevice;
 use crate::types::*;
 use crate::profile;
 
-/// Cached hardware profile data read from the controller.
-/// Stores which buttons/paddles are remapped so the daemon knows
-/// not to emit duplicate events when a paddle is hardware-remapped.
+/// In-memory snapshot of the 3 hardware profiles read from the controller.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HwProfileCache {
     pub profiles: [HwProfile; 3],
@@ -140,48 +136,3 @@ pub fn read_from_controller(dev: &mut GipDevice) -> HwProfileCache {
     cache
 }
 
-/// Cache file path for hardware profiles.
-fn cache_path() -> PathBuf {
-    let dir = if let Ok(d) = std::env::var("XDG_CACHE_HOME") {
-        PathBuf::from(d).join("xbelite2")
-    } else if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".cache/xbelite2")
-    } else {
-        PathBuf::from("/var/cache/xbelite2")
-    };
-    dir.join("hw_profiles.json")
-}
-
-/// Save the hardware profile cache to disk.
-pub fn save(cache: &HwProfileCache) -> std::io::Result<()> {
-    let path = cache_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_string_pretty(cache)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    fs::write(&path, json)
-}
-
-/// Load the hardware profile cache from disk.
-pub fn load() -> Option<HwProfileCache> {
-    let path = cache_path();
-    let data = fs::read_to_string(&path).ok()?;
-    serde_json::from_str(&data).ok()
-}
-
-/// Load cache from a specific path (for daemon running as root).
-pub fn load_from(dir: &Path) -> Option<HwProfileCache> {
-    let path = dir.join("hw_profiles.json");
-    let data = fs::read_to_string(&path).ok()?;
-    serde_json::from_str(&data).ok()
-}
-
-/// Save cache to a specific path.
-pub fn save_to(cache: &HwProfileCache, dir: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(dir)?;
-    let path = dir.join("hw_profiles.json");
-    let json = serde_json::to_string_pretty(cache)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    fs::write(&path, json)
-}

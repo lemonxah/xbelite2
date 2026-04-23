@@ -16,7 +16,7 @@ void xbelite2_on_bt_disconnect(void)
 // BT HID: process a raw HID report. Return 0 to pass through to hidraw.
 int xbelite2_on_bt_report(const unsigned char *data, int size)
 {
-	// All reports pass through to hidraw for the daemon.
+	// All reports pass through to hidraw for userspace tools.
 	// Future: could filter or transform reports in-kernel.
 	(void)data;
 	(void)size;

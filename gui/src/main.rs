@@ -1,4 +1,8 @@
 pub mod profile_model;
+pub mod device_monitor;
+pub mod evdev_reader;
+pub mod hw_config;
+pub mod writer;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 

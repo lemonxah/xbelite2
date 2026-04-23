@@ -2,111 +2,25 @@ use xbelite2_gip::transport::GipDevice;
 use xbelite2_gip::types::*;
 use xbelite2_gip::{led, name, profile, rumble};
 
-mod ipc;
-
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).map(|s| s.as_str()).unwrap_or("help");
 
-    let is_write_op = match mode {
-        "read" | "profiles" | "profile" | "help" => false,
-        "name" => args.get(2).is_some(),
-        _ => true,
-    };
-    
-    let use_ipc = is_write_op && ipc::is_daemon_running();
-    
-    if !use_ipc {
-        let mut dev = GipDevice::open_usb().unwrap_or_else(|e| {
-            eprintln!("Failed to open /dev/xbelite2: {e}");
-            eprintln!("Is the controller connected and xbelite2 module loaded?");
-            std::process::exit(1);
-        });
-        dev.unlock();
-        run_direct(mode, &args, &mut dev);
-    } else {
-        run_via_ipc(mode, &args);
+    if mode == "help" || mode == "--help" || mode == "-h" {
+        print_usage();
+        return;
     }
-}
 
-fn run_via_ipc(mode: &str, args: &[String]) {
-    let result = match mode {
-        "color" => {
-            let idx = parse_profile_idx(args, 2);
-            let (r, g, b) = parse_color(args.get(3).map(|s| s.as_str()).unwrap_or_else(|| {
-                eprintln!("Usage: xbe2-rw color <1-3> <RRGGBB>");
-                std::process::exit(1);
-            }));
-            ipc::set_profile_color(idx, r, g, b)
-                .map(|_| println!("Profile {} color set to #{r:02x}{g:02x}{b:02x}", idx + 1))
-        }
-        "name" => {
-            let new_name = args.get(2).expect("Usage: xbe2-rw name <new-name>");
-            ipc::set_device_name(new_name)
-                .map(|_| println!("Device name set to: {}", new_name))
-        }
-        "deadzone" => {
-            let idx = parse_profile_idx(args, 2);
-            if args.len() < 7 {
-                eprintln!("Usage: xbe2-rw deadzone <1-3> <lstick> <rstick> <ltrigger> <rtrigger>");
-                std::process::exit(1);
-            }
-            let vals: Vec<u8> = args[3..7].iter().filter_map(|s| s.parse().ok()).collect();
-            if vals.len() != 4 {
-                eprintln!("Need 4 numeric values");
-                std::process::exit(1);
-            }
-            ipc::set_deadzones(idx, vals[0], vals[1], vals[2], vals[3])
-                .map(|_| println!(
-                    "Profile {} dead zones: LS={} RS={} LT={} RT={}",
-                    idx + 1, vals[0], vals[1], vals[2], vals[3]
-                ))
-        }
-        "vibration" => {
-            let idx = parse_profile_idx(args, 2);
-            let left: u8 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(48);
-            let right: u8 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(48);
-            ipc::set_vibration(idx, left, right)
-                .map(|_| println!("Profile {} vibration: left={left} right={right}", idx + 1))
-        }
-        "remap" => {
-            let idx = parse_profile_idx(args, 2);
-            if args.len() < 4 {
-                eprintln!("Usage: xbe2-rw remap <1-3> <FROM=TO> ...");
-                eprintln!("  Buttons: A B X Y LB RB LT RT DUp DDown DLeft DRight");
-                std::process::exit(1);
-            }
-            let remaps = parse_remaps(&args[3..]);
-            ipc::remap_buttons(idx, &remaps).map(|_| {
-                println!("Profile {} remapped:", idx + 1);
-                for (from, to) in &remaps {
-                    println!("  {}={}", from.name(), to.name());
-                }
-            })
-        }
-        "remap-reset" => {
-            let idx = parse_profile_idx(args, 2);
-            ipc::reset_remaps(idx)
-                .map(|_| println!("Profile {} remapping reset to default", idx + 1))
-        }
-        "reset" => {
-            let idx = parse_profile_idx(args, 2);
-            ipc::reset_profile(idx)
-                .map(|_| println!("Profile {} fully reset to factory default", idx + 1))
-        }
-        _ => {
-            eprintln!("Command '{}' not supported via IPC yet. Stop daemon to use direct mode.", mode);
-            std::process::exit(1);
-        }
-    };
-    
-    if let Err(e) = result {
-        eprintln!("IPC error: {}", e);
+    let mut dev = GipDevice::open_usb().unwrap_or_else(|e| {
+        eprintln!("Failed to open /dev/xbelite2: {e}");
+        eprintln!("Is the controller connected and xbelite2 module loaded?");
         std::process::exit(1);
-    }
+    });
+    dev.unlock();
+    run(mode, &args, &mut dev);
 }
 
-fn run_direct(mode: &str, args: &[String], dev: &mut GipDevice) {
+fn run(mode: &str, args: &[String], dev: &mut GipDevice) {
     match mode {
         "read" => cmd_read(dev),
         "name" => match args.get(2) {
@@ -199,6 +113,20 @@ fn run_direct(mode: &str, args: &[String], dev: &mut GipDevice) {
                 std::process::exit(1);
             }
         }
+        "invert" => {
+            let idx = parse_profile_idx(args, 2);
+            match args.get(3) {
+                Some(m) => {
+                    let mask: u8 = parse_invert_mask(m);
+                    profile::set_stick_inversion(dev, idx, mask);
+                    println!("Profile {} stick inversion mask set to 0x{:02x}", idx + 1, mask);
+                }
+                None => {
+                    let mask = profile::get_stick_inversion(dev, idx).unwrap_or(0);
+                    println!("{:#04x}", mask);
+                }
+            }
+        }
         "led" => {
             let (r, g, b) = parse_color(args.get(2).map(|s| s.as_str()).unwrap_or_else(|| {
                 eprintln!("Usage: xbe2-rw led <RRGGBB>");
@@ -212,16 +140,19 @@ fn run_direct(mode: &str, args: &[String], dev: &mut GipDevice) {
             println!("LED returned to profile color");
         }
         "rumble" => {
+            if args.len() < 3 {
+                eprintln!("Usage: xbe2-rw rumble <left> <right> [ltrigger] [rtrigger] [duration_ms]");
+                std::process::exit(1);
+            }
             let lm: u8 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
             let rm: u8 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
             let lt: u8 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
             let rt: u8 = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(0);
-            if args.len() < 3 {
-                eprintln!("Usage: xbe2-rw rumble <left> <right> [ltrigger] [rtrigger]");
-                std::process::exit(1);
-            }
+            let ms: u64 = args.get(6).and_then(|s| s.parse().ok()).unwrap_or(50);
             rumble::set(dev, lm, rm, lt, rt);
-            println!("Rumble: LM={lm} RM={rm} LT={lt} RT={rt}");
+            println!("Rumble: LM={lm} RM={rm} LT={lt} RT={rt} ({ms}ms)");
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+            rumble::stop(dev);
         }
         "rumble-stop" => {
             rumble::stop(dev);
@@ -247,9 +178,11 @@ fn print_usage() {
     println!("  xbe2-rw deadzone <1-3> <LS> <RS> <LT> <RT>   Set dead zones (0-255)");
     println!("  xbe2-rw vibration <1-3> <left> <right>        Set vibration (0-100)");
     println!("  xbe2-rw curves <1-3> reset                    Reset stick curves to linear");
+    println!("  xbe2-rw invert <1-3> [mask]                   Get/set stick inversion mask");
+    println!("                                                 bit0=LY bit1=RY bit2=LX bit3=RX");
     println!("  xbe2-rw led <RRGGBB>                          Live LED preview (not saved)");
     println!("  xbe2-rw led-off                               Return LED to profile color");
-    println!("  xbe2-rw rumble <LM> <RM> [LT] [RT]           Test rumble motors (0-100)");
+    println!("  xbe2-rw rumble <LM> <RM> [LT] [RT] [MS]       Test rumble motors (0-100, default 50ms)");
     println!("  xbe2-rw rumble-stop                           Stop rumble");
     println!();
     println!("Buttons: A B X Y LB RB LT RT DUp DDown DLeft DRight");
@@ -401,6 +334,16 @@ fn parse_color(hex: &str) -> (u8, u8, u8) {
         u8::from_str_radix(&clean[2..4], 16).unwrap(),
         u8::from_str_radix(&clean[4..6], 16).unwrap(),
     )
+}
+
+fn parse_invert_mask(s: &str) -> u8 {
+    let clean = s.trim_start_matches("0x");
+    u8::from_str_radix(clean, 16)
+        .or_else(|_| s.parse::<u8>())
+        .unwrap_or_else(|_| {
+            eprintln!("Inversion mask must be 0-15 (decimal) or 0x00-0x0F (hex)");
+            std::process::exit(1);
+        })
 }
 
 fn parse_remaps(args: &[String]) -> Vec<(GipButton, GipButton)> {

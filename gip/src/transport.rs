@@ -157,7 +157,7 @@ impl GipDevice {
         self.vendor_cmd(&[0x07, 0x00]).is_some()
     }
 
-    /// Get a reference to the underlying file (for poll/select in daemon).
+    /// Get a reference to the underlying file (for poll/select).
     pub fn file(&self) -> &File {
         &self.file
     }

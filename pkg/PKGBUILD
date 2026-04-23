@@ -3,30 +3,27 @@ pkgver=0.8.13
 pkgrel=1
 pkgdesc='Xbox Elite Series 2 controller driver and configurator for Linux'
 arch=('x86_64')
-url='https://github.com/lemonxah/xboxelite2'
+url='https://github.com/lemonxah/xbelite2'
 license=('GPL-2.0-only')
 options=('!lto' '!debug')
 depends=('qt6-base' 'qt6-declarative' 'dkms')
 makedepends=('rust' 'cargo')
-backup=('etc/udev/rules.d/99-xbelite2.rules' 'etc/modprobe.d/xbelite2.conf' 'etc/modprobe.d/xbelite2-blacklist.conf')
+backup=('etc/udev/rules.d/99-xbelite2.rules' 'etc/modprobe.d/xbelite2-blacklist.conf')
 install=xbelite2.install
 source=()
 
 build() {
   cd "$startdir/.."
-  cargo build --release
-  cd gui
-  cargo build --release
+  cargo build --release --workspace
 }
 
 package() {
   cd "$startdir/.."
 
-  install -Dm755 target/release/xbelite2d "$pkgdir/usr/bin/xbelite2d"
-  install -Dm755 gui/target/release/xbelite2-gui "$pkgdir/usr/bin/xbelite2-gui"
-  install -Dm644 pkg/xbelite2d.service "$pkgdir/usr/lib/systemd/system/xbelite2d.service"
+  install -Dm755 target/release/xbe2-rw "$pkgdir/usr/bin/xbe2-rw"
+  install -Dm755 target/release/xbe2-bt "$pkgdir/usr/bin/xbe2-bt"
+  install -Dm755 target/release/xbelite2-gui "$pkgdir/usr/bin/xbelite2-gui"
   install -Dm644 99-xbelite2.rules "$pkgdir/etc/udev/rules.d/99-xbelite2.rules"
-  install -Dm644 pkg/modprobe.d/xbelite2.conf "$pkgdir/etc/modprobe.d/xbelite2.conf"
   install -Dm644 pkg/modprobe.d/xbelite2-blacklist.conf "$pkgdir/etc/modprobe.d/xbelite2-blacklist.conf"
 
   # DKMS kernel module source
@@ -51,18 +48,4 @@ Terminal=false
 Type=Application
 Categories=Settings;HardwareSettings;
 EOF
-}
-
-post_install() {
-  echo "------------------------------------------------------"
-  echo "To start and enable the service, run:"
-  echo "  sudo systemctl enable --now xbelite2d.service"
-  echo "------------------------------------------------------"
-}
-
-post_upgrade() {
-  echo "-----------------------------------------------------------------"
-  echo "If you have the service running, don't forget to restart it:"
-  echo "  sudo systemctl restart xbelite2d.service"
-  echo "-----------------------------------------------------------------"
 }

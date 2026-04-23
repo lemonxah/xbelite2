@@ -1,25 +1,22 @@
 # xbelite2 — Xbox Elite Series 2 userspace driver
 #
-# Automatically bind Elite 2 to hid-xbelite2 instead of hid-microsoft.
+# Automatically unbind hid_microsoft from Elite 2 controllers after probe.
+# This prevents duplicate input devices while allowing hid_microsoft to
+# remain loaded for other Microsoft devices.
 
-# BT BLE (0x0B22): unbind whatever grabbed it, bind xbelite2
-ACTION=="add", SUBSYSTEM=="hid", KERNEL=="0005:045E:0B22.*", \
-    RUN+="/bin/sh -c 'echo %k > /sys/bus/hid/drivers/microsoft/unbind 2>/dev/null; echo %k > /sys/bus/hid/drivers/xbelite2/bind 2>/dev/null; true'"
+# BT BLE (0x0B22): unbind hid_microsoft, keep xbelite2
+ACTION=="add", SUBSYSTEM=="hid", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b22", \
+    RUN+="/bin/sh -c 'sleep 0.1; for d in /sys/bus/hid/drivers/microsoft/0005:045E:0B22.*; do [ -e \"$$d\" ] && echo $$(basename $$d) > /sys/bus/hid/drivers/microsoft/unbind 2>/dev/null; done; true'"
 
-# BT Classic (0x0B05)
-ACTION=="add", SUBSYSTEM=="hid", KERNEL=="0005:045E:0B05.*", \
-    RUN+="/bin/sh -c 'echo %k > /sys/bus/hid/drivers/microsoft/unbind 2>/dev/null; echo %k > /sys/bus/hid/drivers/xbelite2/bind 2>/dev/null; true'"
+# BT Classic (0x0B05): unbind hid_microsoft, keep xbelite2  
+ACTION=="add", SUBSYSTEM=="hid", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b05", \
+    RUN+="/bin/sh -c 'sleep 0.1; for d in /sys/bus/hid/drivers/microsoft/0005:045E:0B05.*; do [ -e \"$$d\" ] && echo $$(basename $$d) > /sys/bus/hid/drivers/microsoft/unbind 2>/dev/null; done; true'"
 
-# USB (0x0B00): if xpad grabs the interface, unbind it and let xbelite2 claim it
+# USB (0x0B00): prevent xpad if it binds
 ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="xpad", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b00", \
-    RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/xpad/unbind 2>/dev/null; echo %k > /sys/bus/usb/drivers/xbelite2/bind 2>/dev/null; true'"
+    RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/xpad/unbind 2>/dev/null; true'"
 
-# hidraw: ROOT ONLY — prevents Steam from seeing the raw device.
-# Only our daemon (running as root) accesses hidraw.
-# Steam/games see the virtual gamepad at /dev/input/event* instead.
-KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b22", MODE="0600", GROUP="root", TAG-="uaccess"
-KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b05", MODE="0600", GROUP="root", TAG-="uaccess"
-KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b00", MODE="0600", GROUP="root", TAG-="uaccess"
-
-# uinput access for the daemon
-KERNEL=="uinput", MODE="0660", GROUP="input"
+# Misc char devices created by xbelite2 kmod — grant input group r/w so the
+# GUI / xbe2-rw can issue profile writes without sudo.
+KERNEL=="xbelite2",    SUBSYSTEM=="misc", MODE="0660", GROUP="input"
+KERNEL=="xbelite2_bt", SUBSYSTEM=="misc", MODE="0660", GROUP="input"

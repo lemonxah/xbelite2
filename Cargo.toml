@@ -1,6 +1,5 @@
 [workspace]
 members = [
-    "daemon",
     "gip",
     "xbe2-rw",
     "xbe2-bt",

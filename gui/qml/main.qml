@@ -16,7 +16,7 @@ ApplicationWindow {
 
     ProfileModel {
         id: profileModel
-        Component.onCompleted: connect_daemon()
+        Component.onCompleted: init_device()
     }
 
     // Poll controller status for live input display

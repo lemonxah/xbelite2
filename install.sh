@@ -1,34 +1,34 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "Building xbelite2d..."
-cargo build --release
+echo "Building userspace tools..."
+cargo build --release --workspace
 
-echo "Installing binary..."
-sudo install -m 755 target/release/xbelite2d /usr/local/bin/xbelite2d
+echo "Installing binaries..."
+sudo install -m 755 target/release/xbe2-rw  /usr/local/bin/xbe2-rw
+sudo install -m 755 target/release/xbe2-bt  /usr/local/bin/xbe2-bt
+if [[ -x target/release/xbelite2-gui ]]; then
+    sudo install -m 755 target/release/xbelite2-gui /usr/local/bin/xbelite2-gui
+fi
 
 echo "Installing udev rules..."
 sudo install -m 644 99-xbelite2.rules /etc/udev/rules.d/99-xbelite2.rules
 sudo udevadm control --reload-rules
-sudo udevadm trigger
+sudo udevadm trigger --subsystem-match=misc --action=change || true
 
-echo "Installing systemd service..."
-sudo install -m 644 xbelite2d.service /etc/systemd/system/xbelite2d.service
-sudo systemctl daemon-reload
+echo "Building kernel module..."
+make -C kmod
+
+echo "Installing kernel module..."
+KVER="$(uname -r)"
+sudo install -m 644 kmod/xbelite2.ko "/lib/modules/${KVER}/extra/xbelite2.ko"
+sudo depmod -a
 
 echo ""
-echo "Installation complete!"
+echo "Installation complete."
 echo ""
-echo "To start the daemon:"
-echo "  sudo systemctl start xbelite2d"
+echo "Load the module with:  sudo modprobe xbelite2"
+echo "Unload with:           sudo rmmod xbelite2"
 echo ""
-echo "To enable on boot:"
-echo "  sudo systemctl enable xbelite2d"
-echo ""
-echo "To check status:"
-echo "  sudo systemctl status xbelite2d"
-echo ""
-echo "NOTE: You may need to blacklist xpadneo for Elite 2 PIDs if it's installed."
-echo "Add to /etc/modprobe.d/xbelite2.conf:"
-echo '  # Prevent xpadneo from claiming Elite 2 controllers'
-echo '  # (only needed if xpadneo is installed)'
+echo "Ensure your user is in the 'input' group so xbe2-rw can access /dev/xbelite2:"
+echo "  sudo usermod -aG input \$USER   # logout/login for it to take effect"

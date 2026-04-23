@@ -25,21 +25,22 @@ kmod:
     sudo insmod kmod/xbelite2.ko
     @echo "Module loaded"
 
-# Build daemon
+# Build release binaries
 build:
     cargo build --workspace --release
 
-# Build and install everything locally (no package)
+# Build and install CLI tools and GUI locally (no package)
 install: build
-    sudo systemctl stop xbelite2d
-    sudo cp target/release/xbelite2d /usr/bin/xbelite2d
+    sudo cp target/release/xbe2-rw /usr/bin/xbe2-rw
+    sudo cp target/release/xbe2-bt /usr/bin/xbe2-bt
     sudo cp target/release/xbelite2-gui /usr/bin/xbelite2-gui
-    sudo systemctl start xbelite2d
-    @echo "Daemon restarted"
+    sudo cp 99-xbelite2.rules /etc/udev/rules.d/
+    sudo cp pkg/modprobe.d/xbelite2-blacklist.conf /etc/modprobe.d/
+    sudo udevadm control --reload-rules
+    @echo "Tools, udev rules, and modprobe config installed"
 
 # Disable all Xbox controller modules for USB passthrough to VM
 passthrough:
-    sudo systemctl stop xbelite2d
     -sudo rmmod xbelite2 2>/dev/null
     -sudo rmmod xpad 2>/dev/null
     -sudo rmmod hid_microsoft 2>/dev/null
@@ -55,7 +56,6 @@ passthrough-done:
     sudo rm -f /etc/modprobe.d/xbelite2-temp-blacklist.conf
     sudo udevadm control --reload-rules
     sudo modprobe xbelite2
-    sudo systemctl start xbelite2d
     @echo "Modules re-enabled"
 
 aur_dir := "../aur/xbelite2-dkms"
@@ -74,6 +74,6 @@ release new_version msg="":
 aur-publish new_version:
     cp pkg/xbelite2.install {{aur_dir}}/xbelite2.install
     sed -i 's/^pkgver=.*/pkgver={{new_version}}/' {{aur_dir}}/PKGBUILD
-    cd {{aur_dir}} && makepkg --printsrcinfo > .SRCINFO
     cd {{aur_dir}} && updpkgsums
+    cd {{aur_dir}} && makepkg --printsrcinfo > .SRCINFO
     cd {{aur_dir}} && git commit -am "updated the version to {{new_version}}" && git push

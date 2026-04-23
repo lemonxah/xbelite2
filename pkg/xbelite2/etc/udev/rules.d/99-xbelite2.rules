@@ -1,25 +1,22 @@
-# xbelite2 - Xbox Elite Series 2 userspace driver
+# xbelite2 — Xbox Elite Series 2 userspace driver
 #
-# Prevent xpad/xpadneo from claiming Elite 2 controllers so our daemon
-# can access them via hidraw.
+# Automatically unbind hid_microsoft from Elite 2 controllers after probe.
+# This prevents duplicate input devices while allowing hid_microsoft to
+# remain loaded for other Microsoft devices.
 
-# BT: grant hidraw access
-KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b05", MODE="0660", TAG+="uaccess"
-KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b22", MODE="0660", TAG+="uaccess"
-KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="028e", SUBSYSTEM=="hidraw", MODE="0660", TAG+="uaccess"
-
-# USB: unbind xpad/xpadneo and rebind to usbhid for hidraw access
-ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="0b00", \
-    RUN+="/bin/sh -c 'for drv in xpad xpadneo; do echo $kernel > /sys/bus/usb/drivers/$drv/unbind 2>/dev/null; done; echo $kernel > /sys/bus/usb/drivers/usbhid/bind 2>/dev/null'"
-
-# BT: unbind xpadneo from Elite 2 BLE devices so hid-generic handles them
+# BT BLE (0x0B22): unbind hid_microsoft, keep xbelite2
 ACTION=="add", SUBSYSTEM=="hid", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b22", \
-    RUN+="/bin/sh -c 'echo $kernel > /sys/bus/hid/drivers/xpadneo/unbind 2>/dev/null'"
+    RUN+="/bin/sh -c 'sleep 0.1; for d in /sys/bus/hid/drivers/microsoft/0005:045E:0B22.*; do [ -e \"$$d\" ] && echo $$(basename $$d) > /sys/bus/hid/drivers/microsoft/unbind 2>/dev/null; done; true'"
+
+# BT Classic (0x0B05): unbind hid_microsoft, keep xbelite2  
 ACTION=="add", SUBSYSTEM=="hid", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b05", \
-    RUN+="/bin/sh -c 'echo $kernel > /sys/bus/hid/drivers/xpadneo/unbind 2>/dev/null'"
+    RUN+="/bin/sh -c 'sleep 0.1; for d in /sys/bus/hid/drivers/microsoft/0005:045E:0B05.*; do [ -e \"$$d\" ] && echo $$(basename $$d) > /sys/bus/hid/drivers/microsoft/unbind 2>/dev/null; done; true'"
 
-# USB: grant hidraw access after rebind
-KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b00", MODE="0660", TAG+="uaccess"
+# USB (0x0B00): prevent xpad if it binds
+ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="xpad", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b00", \
+    RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/xpad/unbind 2>/dev/null; true'"
 
-# uinput access for virtual gamepad creation
-KERNEL=="uinput", MODE="0660", GROUP="input"
+# Misc char devices created by xbelite2 kmod — grant input group r/w so the
+# GUI / xbe2-rw can issue profile writes without sudo.
+KERNEL=="xbelite2",    SUBSYSTEM=="misc", MODE="0660", GROUP="input"
+KERNEL=="xbelite2_bt", SUBSYSTEM=="misc", MODE="0660", GROUP="input"

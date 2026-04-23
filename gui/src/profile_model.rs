@@ -46,7 +46,7 @@ pub mod qobject {
         type ProfileModel = super::ProfileModelRust;
 
         #[qinvokable]
-        fn connect_daemon(self: Pin<&mut ProfileModel>);
+        fn init_device(self: Pin<&mut ProfileModel>);
 
         #[qinvokable]
         fn select_profile(self: Pin<&mut ProfileModel>, index: i32);
@@ -136,8 +136,11 @@ use core::pin::Pin;
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::QString;
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
+
+use crate::device_monitor;
+use crate::evdev_reader::EvdevReader;
+use crate::hw_config;
+use crate::writer::{Writer, WriteOp};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Config {
@@ -209,67 +212,6 @@ impl Default for Vib {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type")]
-enum Req {
-    GetStatus,
-    GetConfig { device_id: String },
-    SetConfig { device_id: String, config: Config },
-    SetActiveProfile { device_id: String, profile_index: Option<usize> },
-    TestVibration { device_id: String, motor: u8, intensity: u8 },
-    TestAllVibration { device_id: String, intensities: [u8; 4] },
-    SetProfileColor { device_id: String, r: u8, g: u8, b: u8 },
-    SetDeviceName { device_id: String, name: String },
-    SetHwRemap { device_id: String, src: String, normal_dst: String, shift_dst: String },
-    SetProfileBrightness { device_id: String, brightness: u8 },
-    SetShiftButton { device_id: String, button: String },
-    SetStickInversion { device_id: String, inversion_mask: u8 },
-    PersistHwChanges { device_id: String },
-}
-
-fn default_brightness() -> u8 { 100 }
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type")]
-enum Resp {
-    Status { devices: Vec<DevSt> },
-    Config { config: Config },
-    Ok,
-    Error { message: String },
-    ProfileList { profiles: Vec<String> },
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct DevSt {
-    device_id: String,
-    name: String,
-    hw_profile: u8,
-    active_profile: usize,
-    connected: bool,
-    #[serde(default)]
-    is_usb: bool,
-    #[serde(default)]
-    profile_color: String,
-    #[serde(default = "default_brightness")]
-    profile_brightness: u8,
-    #[serde(default)]
-    buttons: u16,
-    #[serde(default)]
-    paddles: u8,
-    #[serde(default)]
-    left_stick_x: i16,
-    #[serde(default)]
-    left_stick_y: i16,
-    #[serde(default)]
-    right_stick_x: i16,
-    #[serde(default)]
-    right_stick_y: i16,
-    #[serde(default)]
-    left_trigger: u16,
-    #[serde(default)]
-    right_trigger: u16,
-}
-
 pub struct ProfileModelRust {
     device_name: QString,
     hw_profile: i32,
@@ -304,10 +246,20 @@ pub struct ProfileModelRust {
     live_rt: i32,
 
     config: Config,
-    device_id: String,
     sel_idx: usize,
-    // Persistent IPC connection for fast polling
-    poll_conn: Option<UnixStream>,
+    evdev: EvdevReader,
+    /// Cached sysfs interface path (e.g. /sys/bus/usb/drivers/xbelite2/1-1:1.0).
+    /// When set, fast-path polls read hw_profile from <path>/hw_profile without
+    /// re-walking sysfs. Cleared when the path disappears to trigger re-detect.
+    sysfs_path: Option<std::path::PathBuf>,
+    /// In-memory snapshot of the 3 hardware profiles, read once on connect and
+    /// updated optimistically on every successful write.
+    hw_cache: xbelite2_gip::hw_profile::HwProfileCache,
+    /// True once `hw_cache` has been populated for the current device.
+    hw_cache_loaded: bool,
+    /// Background writer thread. All hardware writes are posted here so the
+    /// Qt main thread never blocks on USB I/O.
+    writer: Writer,
 }
 
 impl Default for ProfileModelRust {
@@ -345,59 +297,48 @@ impl Default for ProfileModelRust {
             live_lt: 0,
             live_rt: 0,
             config: Config::default(),
-            device_id: String::new(),
             sel_idx: 0,
-            poll_conn: None,
+            evdev: EvdevReader::new(),
+            sysfs_path: None,
+            hw_cache: xbelite2_gip::hw_profile::HwProfileCache::default(),
+            hw_cache_loaded: false,
+            writer: Writer::spawn(),
         }
     }
 }
 
 impl qobject::ProfileModel {
-    fn connect_daemon(mut self: Pin<&mut Self>) {
-        // Load config from user's home directory
+    fn init_device(mut self: Pin<&mut Self>) {
         let config = load_user_config();
         let cnt = config.profiles.len() as i32;
         self.as_mut().set_profile_count(cnt);
         self.as_mut().rust_mut().config = config.clone();
 
-        // Try connecting to daemon
-        let sp = sock_path();
-        match ipc(&sp, &Req::GetStatus) {
-            Ok(Resp::Status { devices }) => {
-                if let Some(dev) = devices.first() {
-                    let hw = dev.hw_profile as i32;
-                    self.as_mut().set_device_name(QString::from(&dev.name));
-                    self.as_mut().set_hw_profile(hw);
-                    self.as_mut().set_connected(dev.connected);
-                    self.as_mut().set_is_usb(dev.is_usb);
-                    let color_str = if dev.profile_color.is_empty() { "default" } else { &dev.profile_color };
-                    self.as_mut().set_profile_color(QString::from(color_str));
-                    let did = dev.device_id.clone();
-                    self.as_mut().rust_mut().device_id = did.clone();
-                    let _ = ipc(&sp, &Req::SetConfig { device_id: did, config });
-
-                    self.as_mut().set_profile_brightness(dev.profile_brightness as i32);
-
-                    // Select the correct software profile based on HW profile
-                    if hw >= 1 && hw <= 3 {
-                        let sw_idx = (hw - 1) as usize;
-                        self.as_mut().rust_mut().sel_idx = sw_idx;
-                        self.as_mut().set_active_profile(hw);
-                    } else {
-                        self.as_mut().set_active_profile(0);
-                    }
-                } else {
-                    self.as_mut().set_device_name(QString::from("No controller found"));
-                    self.as_mut().set_connected(false);
+        let info = device_monitor::detect_controller();
+        
+        if info.connected {
+            self.as_mut().set_connected(true);
+            self.as_mut().set_is_usb(info.is_usb);
+            self.as_mut().set_device_name(QString::from(&info.name));
+            self.as_mut().set_hw_profile(info.hw_profile as i32);
+            
+            if let Some(event_path) = info.event_path {
+                let _ = self.as_mut().rust_mut().evdev.open(&event_path);
+            }
+            
+            if info.is_usb {
+                if let Ok(name) = hw_config::read_device_name() {
+                    self.as_mut().set_device_name(QString::from(&name));
                 }
             }
-            _ => {
-                self.as_mut().set_device_name(QString::from("Daemon not running"));
-                self.as_mut().set_connected(false);
-            }
+            self.as_mut().rust_mut().sysfs_path = info.sysfs_path;
+            self.as_mut().refresh_hw_cache();
+            self.as_mut().update_profile_color_from_cache();
+        } else {
+            self.as_mut().set_connected(false);
+            self.as_mut().set_device_name(QString::from(&info.name));
         }
 
-        // Load the active profile's data
         let idx = self.as_ref().rust().sel_idx;
         self.load_profile(idx);
     }
@@ -503,17 +444,7 @@ impl qobject::ProfileModel {
 
     fn save_profile(self: Pin<&mut Self>) {
         let cfg = self.rust().config.clone();
-        let sp = sock_path();
-        let did = self.rust().device_id.clone();
-
-        // Save software config
         save_user_config(&cfg);
-        let _ = ipc(&sp, &Req::SetConfig { device_id: did.clone(), config: cfg });
-
-        // Persist hardware changes to controller flash (USB only)
-        if self.rust().is_usb && !did.is_empty() {
-            let _ = ipc(&sp, &Req::PersistHwChanges { device_id: did });
-        }
     }
 
     fn get_profile_names(&self) -> QString {
@@ -530,52 +461,50 @@ impl qobject::ProfileModel {
 
     fn set_device_name_text(mut self: Pin<&mut Self>, name: QString) {
         if !self.rust().is_usb { return; }
-        let sp = sock_path();
-        let did = self.rust().device_id.clone();
         let name_str = name.to_string();
-        if !did.is_empty() {
-            let _ = ipc(&sp, &Req::SetDeviceName { device_id: did, name: name_str.clone() });
-            self.as_mut().set_device_name(QString::from(&name_str));
-        }
+        // Optimistic UI update; hardware write happens off-thread.
+        self.as_mut().set_device_name(QString::from(&name_str));
+        self.rust().writer.send(WriteOp::SetDeviceName { name: name_str });
     }
 
     fn set_profile_color_hex(mut self: Pin<&mut Self>, hex: QString) {
         if !self.rust().is_usb { return; }
-        let hex_str = hex.to_string();
-        let clean: String = hex_str.trim_start_matches('#').chars().filter(|c| c.is_ascii_hexdigit()).collect();
-        if clean.len() != 6 { return; }
-        let r = u8::from_str_radix(&clean[0..2], 16).unwrap_or(0);
-        let g = u8::from_str_radix(&clean[2..4], 16).unwrap_or(0);
-        let b = u8::from_str_radix(&clean[4..6], 16).unwrap_or(0);
+        let hw = self.rust().hw_profile as u8;
+        if hw < 1 || hw > 3 { return; }
 
-        let sp = sock_path();
-        let did = self.rust().device_id.clone();
-        if !did.is_empty() {
-            let _ = ipc(&sp, &Req::SetProfileColor { device_id: did, r, g, b });
-        }
-        self.as_mut().set_profile_color(QString::from(&format!("#{:02x}{:02x}{:02x}", r, g, b)));
+        let hex_str = hex.to_string();
+        let clean = hex_str.trim_start_matches('#');
+        if clean.len() != 6 { return; }
+        let (r, g, b) = match (
+            u8::from_str_radix(&clean[0..2], 16),
+            u8::from_str_radix(&clean[2..4], 16),
+            u8::from_str_radix(&clean[4..6], 16),
+        ) {
+            (Ok(r), Ok(g), Ok(b)) => (r, g, b),
+            _ => return,
+        };
+
+        // Optimistic UI + cache update.
+        let idx = (hw - 1) as usize;
+        self.as_mut().rust_mut().hw_cache.profiles[idx].color = Some((r, g, b));
+        self.as_mut().set_profile_color(hex);
+        self.rust().writer.send(WriteOp::SetColor { profile_idx: idx, r, g, b });
     }
 
-    fn read_hw_profile_color(self: Pin<&mut Self>) {
-        // Color is now read from daemon IPC status in refresh_status()
+    fn read_hw_profile_color(mut self: Pin<&mut Self>) {
+        self.as_mut().update_profile_color_from_cache();
     }
 
     fn get_hw_profile_info(&self) -> QString {
-        // This is called from QML to get remap info for the current profile.
-        // We read from the daemon's cached hw_profiles.json file instead of
-        // opening the GIP device (which would conflict with the daemon).
+        // Returns the current hw profile's remap data as JSON for QML.
+        // Backed by the in-memory cache populated on connect and updated
+        // optimistically after writes.
         let hw = self.rust().hw_profile;
-        if hw < 1 || hw > 3 {
+        if hw < 1 || hw > 3 || !self.rust().hw_cache_loaded {
             return QString::from("{}");
         }
         let idx = (hw - 1) as usize;
-
-        let cache_dir = std::path::PathBuf::from("/var/cache/xbelite2");
-        let cache = match xbelite2_gip::hw_profile::load_from(&cache_dir) {
-            Some(c) => c,
-            None => return QString::from("{}"),
-        };
-        let profile = &cache.profiles[idx];
+        let profile = &self.rust().hw_cache.profiles[idx];
 
         let btn_name = |code: u8| -> &str {
             xbelite2_gip::types::GipButton::from_code(code)
@@ -657,61 +586,42 @@ impl qobject::ProfileModel {
     }
 
     fn set_profile_brightness_value(mut self: Pin<&mut Self>, brightness: i32) {
-        if !self.rust().is_usb { return; }
-        let sp = sock_path();
-        let did = self.rust().device_id.clone();
-        if !did.is_empty() {
-            let _ = ipc(&sp, &Req::SetProfileBrightness {
-                device_id: did,
-                brightness: brightness.clamp(0, 100) as u8,
-            });
-        }
         self.as_mut().set_profile_brightness(brightness);
     }
 
-    fn set_stick_invert(self: Pin<&mut Self>, stick: i32, axis: i32, inverted: bool) {
+    fn set_stick_invert(mut self: Pin<&mut Self>, stick: i32, axis: i32, inverted: bool) {
         if !self.rust().is_usb { return; }
-        let sp = sock_path();
-        let did = self.rust().device_id.clone();
-        if did.is_empty() { return; }
-
-        // Read current mask from cache
         let hw = self.rust().hw_profile;
         if hw < 1 || hw > 3 { return; }
-        let cache_dir = std::path::PathBuf::from("/var/cache/xbelite2");
-        let mut mask: u8 = xbelite2_gip::hw_profile::load_from(&cache_dir)
-            .map(|c| c.profiles[(hw - 1) as usize].stick_inversion)
-            .unwrap_or(0);
+        let idx = (hw - 1) as usize;
 
-        // bit0=LY, bit1=RY (from protocol)
-        // We extend: bit0=LY, bit1=RY, bit2=LX, bit3=RX (tentative for X axes)
+        // bit0=LY, bit1=RY, bit2=LX, bit3=RX — matches gip::profile::set_stick_inversion
         let bit = match (stick, axis) {
             (0, 1) => 0, // left Y
             (1, 1) => 1, // right Y
-            (0, 0) => 2, // left X (tentative)
-            (1, 0) => 3, // right X (tentative)
+            (0, 0) => 2, // left X
+            (1, 0) => 3, // right X
             _ => return,
         };
 
+        let mut mask = self.rust().hw_cache.profiles[idx].stick_inversion;
         if inverted {
             mask |= 1 << bit;
         } else {
             mask &= !(1 << bit);
         }
 
-        let _ = ipc(&sp, &Req::SetStickInversion { device_id: did, inversion_mask: mask });
+        // Optimistic cache update; hardware write off-thread.
+        self.as_mut().rust_mut().hw_cache.profiles[idx].stick_inversion = mask;
+        self.rust().writer.send(WriteOp::SetStickInversion { profile_idx: idx, mask });
     }
 
     fn get_stick_inversion(&self) -> QString {
         let hw = self.rust().hw_profile;
-        if hw < 1 || hw > 3 {
+        if hw < 1 || hw > 3 || !self.rust().hw_cache_loaded {
             return QString::from("{\"ly\":false,\"ry\":false,\"lx\":false,\"rx\":false}");
         }
-        let cache_dir = std::path::PathBuf::from("/var/cache/xbelite2");
-        let mask = xbelite2_gip::hw_profile::load_from(&cache_dir)
-            .map(|c| c.profiles[(hw - 1) as usize].stick_inversion)
-            .unwrap_or(0);
-
+        let mask = self.rust().hw_cache.profiles[(hw - 1) as usize].stick_inversion;
         let result = serde_json::json!({
             "ly": mask & 0x01 != 0,
             "ry": mask & 0x02 != 0,
@@ -723,27 +633,48 @@ impl qobject::ProfileModel {
 
     fn set_shift_button(self: Pin<&mut Self>, btn: QString) {
         if !self.rust().is_usb { return; }
-        let sp = sock_path();
-        let did = self.rust().device_id.clone();
-        if !did.is_empty() {
-            let _ = ipc(&sp, &Req::SetShiftButton {
-                device_id: did,
-                button: btn.to_string(),
-            });
-        }
+        let hw = self.rust().hw_profile as u8;
+        if hw < 1 || hw > 3 { return; }
+        
+        // Shift button is configured via hardware profile settings
+        // This would need a dedicated xbe2-rw command - for now, stub
+        let _btn_str = btn.to_string();
+        // TODO: Implement shift button configuration when xbe2-rw supports it
     }
 
     fn set_hw_remap(self: Pin<&mut Self>, src: QString, normal_dst: QString, shift_dst: QString) {
         if !self.rust().is_usb { return; }
-        let sp = sock_path();
-        let did = self.rust().device_id.clone();
-        if !did.is_empty() {
-            let _ = ipc(&sp, &Req::SetHwRemap {
-                device_id: did,
-                src: src.to_string(),
-                normal_dst: normal_dst.to_string(),
-                shift_dst: shift_dst.to_string(),
-            });
+        let hw = self.rust().hw_profile as u8;
+        if hw < 1 || hw > 3 { return; }
+        let idx = (hw - 1) as usize;
+
+        let src_str = src.to_string();
+        let normal_str = normal_dst.to_string();
+        let shift_str = shift_dst.to_string();
+
+        let src_btn = match xbelite2_gip::types::GipButton::from_name(&src_str) {
+            Some(b) => b,
+            None => return,
+        };
+
+        if !normal_str.is_empty() {
+            if let Some(to) = xbelite2_gip::types::GipButton::from_name(&normal_str) {
+                self.rust().writer.send(WriteOp::SetRemapNormal {
+                    profile_idx: idx,
+                    from: src_btn,
+                    to,
+                });
+            }
+        }
+
+        if !shift_str.is_empty() {
+            if let Some(to) = xbelite2_gip::types::GipButton::from_name(&shift_str) {
+                self.rust().writer.send(WriteOp::SetRemapShift {
+                    profile_idx: idx,
+                    from: src_btn,
+                    to,
+                });
+            }
         }
     }
 
@@ -782,62 +713,130 @@ impl qobject::ProfileModel {
     }
 
     fn test_vibration(self: Pin<&mut Self>, motor: i32, intensity: i32) {
-        let sp = sock_path();
-        let did = self.rust().device_id.clone();
-        if !did.is_empty() {
-            let _ = ipc(&sp, &Req::TestVibration {
-                device_id: did,
-                motor: motor as u8,
-                intensity: intensity as u8,
-            });
-        }
+        let i = intensity.clamp(0, 100) as u8;
+        let (lm, rm, lt, rt) = match motor {
+            0 => (i, 0, 0, 0),
+            1 => (0, i, 0, 0),
+            2 => (0, 0, i, 0),
+            3 => (0, 0, 0, i),
+            _ => return,
+        };
+        self.rust().writer.send(WriteOp::Rumble { lm, rm, lt, rt, duration_ms: 50 });
     }
 
     fn test_all_vibration(self: Pin<&mut Self>) {
-        let sp = sock_path();
-        let did = self.rust().device_id.clone();
-        if !did.is_empty() {
-            let intensities = [
-                self.rust().vibration_main as u8,
-                self.rust().vibration_weak as u8,
-                self.rust().vibration_lt as u8,
-                self.rust().vibration_rt as u8,
-            ];
-            let _ = ipc(&sp, &Req::TestAllVibration { device_id: did, intensities });
-        }
+        let lm = self.rust().vibration_main.clamp(0, 100) as u8;
+        let rm = self.rust().vibration_weak.clamp(0, 100) as u8;
+        let lt = self.rust().vibration_lt.clamp(0, 100) as u8;
+        let rt = self.rust().vibration_rt.clamp(0, 100) as u8;
+        self.rust().writer.send(WriteOp::Rumble { lm, rm, lt, rt, duration_ms: 50 });
     }
 
     fn refresh_status(mut self: Pin<&mut Self>) {
-        // Use persistent connection for fast polling
-        let resp = fast_poll(self.as_mut().rust_mut());
-        if let Some(dev) = resp {
-            let old_hw = self.rust().hw_profile;
-            let new_hw = dev.hw_profile as i32;
-            self.as_mut().set_hw_profile(new_hw);
-            self.as_mut().set_connected(dev.connected);
-            self.as_mut().set_is_usb(dev.is_usb);
-            self.as_mut().set_device_name(QString::from(&dev.name));
-
-            // Update profile color and brightness from daemon cache
-            let color_str = if dev.profile_color.is_empty() { "default" } else { &dev.profile_color };
-            self.as_mut().set_profile_color(QString::from(color_str));
-            self.as_mut().set_profile_brightness(dev.profile_brightness as i32);
-
-            if old_hw != new_hw && new_hw >= 1 && new_hw <= 3 {
-                let sw_idx = (new_hw - 1) as usize;
-                self.as_mut().rust_mut().sel_idx = sw_idx;
-                self.as_mut().set_active_profile(new_hw);
-                self.as_mut().load_profile(sw_idx);
+        // Fast path: we already have a bound device. Just read hw_profile
+        // from the cached sysfs path (one file read) and poll evdev.
+        let cached = self.rust().sysfs_path.clone();
+        if let Some(path) = cached {
+            match device_monitor::poll_hw_profile(&path) {
+                Some(hw) => {
+                    let hw_i = hw as i32;
+                    if hw_i != self.rust().hw_profile {
+                        self.as_mut().set_hw_profile(hw_i);
+                        self.as_mut().update_profile_color_from_cache();
+                    }
+                    let input = self.as_mut().rust_mut().evdev.poll();
+                    self.as_mut().set_live_buttons(input.buttons as i32);
+                    self.as_mut().set_live_paddles(input.paddles as i32);
+                    self.as_mut().set_live_lx(input.left_stick_x as i32);
+                    self.as_mut().set_live_ly(input.left_stick_y as i32);
+                    self.as_mut().set_live_rx(input.right_stick_x as i32);
+                    self.as_mut().set_live_ry(input.right_stick_y as i32);
+                    self.as_mut().set_live_lt(input.left_trigger as i32);
+                    self.as_mut().set_live_rt(input.right_trigger as i32);
+                    return;
+                }
+                None => {
+                    // Device unbound — drop caches and fall through to re-detect.
+                    self.as_mut().rust_mut().sysfs_path = None;
+                    self.as_mut().rust_mut().evdev.device = None;
+                }
             }
+        }
 
-            self.as_mut().set_live_buttons(dev.buttons as i32);
-            self.as_mut().set_live_paddles(dev.paddles as i32);
-            self.as_mut().set_live_lx(dev.left_stick_x as i32);
-            self.as_mut().set_live_ly(dev.left_stick_y as i32);
-            self.as_mut().set_live_rx(dev.right_stick_x as i32);
-            self.as_mut().set_live_ry(dev.right_stick_y as i32);
-            self.as_mut().set_live_lt(dev.left_trigger as i32);
-            self.as_mut().set_live_rt(dev.right_trigger as i32);
+        // Slow path: walk sysfs to find a bound device. Only runs when we
+        // don't have a cached path (disconnected or just started).
+        let info = device_monitor::detect_controller();
+        if self.rust().connected != info.connected {
+            self.as_mut().set_connected(info.connected);
+        }
+        if self.rust().is_usb != info.is_usb {
+            self.as_mut().set_is_usb(info.is_usb);
+        }
+        let name_qs = QString::from(&info.name);
+        if self.rust().device_name != name_qs {
+            self.as_mut().set_device_name(name_qs);
+        }
+        if self.rust().hw_profile != info.hw_profile as i32 {
+            self.as_mut().set_hw_profile(info.hw_profile as i32);
+        }
+
+        if info.connected {
+            self.as_mut().rust_mut().sysfs_path = info.sysfs_path;
+            if let Some(event_path) = info.event_path {
+                if self.rust().evdev.device.is_none() {
+                    let _ = self.as_mut().rust_mut().evdev.open(&event_path);
+                }
+            }
+            if !self.rust().hw_cache_loaded {
+                self.as_mut().refresh_hw_cache();
+            }
+            self.as_mut().update_profile_color_from_cache();
+        } else {
+            // Device went away — invalidate the cache so a fresh read happens on reconnect.
+            self.as_mut().rust_mut().hw_cache_loaded = false;
+        }
+    }
+
+    /// Update the QML-facing `profile_color` property from the in-memory cache.
+    fn update_profile_color_from_cache(mut self: Pin<&mut Self>) {
+        let hw = self.rust().hw_profile;
+        if hw < 1 || hw > 3 || !self.rust().hw_cache_loaded {
+            let def = QString::from("default");
+            if self.rust().profile_color != def {
+                self.as_mut().set_profile_color(def);
+            }
+            return;
+        }
+        let idx = (hw - 1) as usize;
+        let color = self.rust().hw_cache.profiles[idx]
+            .color
+            .map(|(r, g, b)| format!("#{r:02x}{g:02x}{b:02x}"))
+            .unwrap_or_else(|| "default".to_string());
+        let color_qs = QString::from(&color);
+        if self.rust().profile_color != color_qs {
+            self.as_mut().set_profile_color(color_qs);
+        }
+    }
+
+    /// Open /dev/xbelite2 and read all 3 hardware profiles into the in-memory
+    /// cache. Called once per connect; subsequent writes update the cache
+    /// optimistically. USB only.
+    fn refresh_hw_cache(mut self: Pin<&mut Self>) {
+        if !self.rust().is_usb {
+            self.as_mut().rust_mut().hw_cache_loaded = false;
+            return;
+        }
+        match xbelite2_gip::transport::GipDevice::open_usb() {
+            Ok(mut dev) => {
+                dev.unlock();
+                let cache = xbelite2_gip::hw_profile::read_from_controller(&mut dev);
+                self.as_mut().rust_mut().hw_cache = cache;
+                self.as_mut().rust_mut().hw_cache_loaded = true;
+            }
+            Err(e) => {
+                eprintln!("refresh_hw_cache: failed to open /dev/xbelite2: {e}");
+                self.as_mut().rust_mut().hw_cache_loaded = false;
+            }
         }
     }
 
@@ -855,78 +854,6 @@ impl qobject::ProfileModel {
             }
         }
     }
-}
-
-fn sock_path() -> String {
-    "/run/xbelite2.sock".into()
-}
-
-/// Fast status poll using a persistent connection.
-/// Reconnects if the connection is lost.
-fn fast_poll(model: Pin<&mut ProfileModelRust>) -> Option<DevSt> {
-    let model = unsafe { model.get_unchecked_mut() };
-    let timeout = Some(std::time::Duration::from_millis(10));
-
-    // Ensure we have a connection
-    if model.poll_conn.is_none() {
-        if let Ok(s) = UnixStream::connect(sock_path()) {
-            s.set_read_timeout(timeout).ok();
-            s.set_write_timeout(timeout).ok();
-            s.set_nonblocking(false).ok();
-            model.poll_conn = Some(s);
-        } else {
-            return None;
-        }
-    }
-
-    let conn = model.poll_conn.as_mut()?;
-    let req = "{\"type\":\"GetStatus\"}\n";
-
-    // Write request
-    if conn.write_all(req.as_bytes()).is_err() {
-        model.poll_conn = None;
-        return None;
-    }
-
-    // Read response line
-    let mut buf = [0u8; 4096];
-    let mut pos = 0;
-    loop {
-        match conn.read(&mut buf[pos..pos + 1]) {
-            Ok(1) => {
-                if buf[pos] == b'\n' || pos >= 4094 {
-                    break;
-                }
-                pos += 1;
-            }
-            _ => {
-                model.poll_conn = None;
-                return None;
-            }
-        }
-    }
-
-    let line = std::str::from_utf8(&buf[..pos]).ok()?;
-    let resp: Resp = serde_json::from_str(line).ok()?;
-    match resp {
-        Resp::Status { devices } => devices.into_iter().next(),
-        _ => None,
-    }
-}
-
-fn ipc(path: &str, req: &Req) -> Result<Resp, String> {
-    let s = UnixStream::connect(path).map_err(|e| e.to_string())?;
-    // Set short timeouts so we don't block the Qt event loop
-    let timeout = Some(std::time::Duration::from_millis(30));
-    s.set_read_timeout(timeout).ok();
-    s.set_write_timeout(timeout).ok();
-    let mut sw = &s;
-    let j = serde_json::to_string(req).map_err(|e| e.to_string())?;
-    writeln!(sw, "{j}").map_err(|e| e.to_string())?;
-    let mut r = BufReader::new(&s);
-    let mut l = String::new();
-    r.read_line(&mut l).map_err(|e| e.to_string())?;
-    serde_json::from_str(&l).map_err(|e| e.to_string())
 }
 
 fn user_config_dir() -> std::path::PathBuf {

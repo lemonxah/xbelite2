@@ -8,6 +8,7 @@
 #include <linux/slab.h>
 #include <linux/miscdevice.h>
 #include <linux/poll.h>
+#include <linux/input.h>
 
 #define VENDOR_MS    0x045E
 #define PID_USB      0x0B00
@@ -22,6 +23,10 @@ extern int xbelite2_on_bt_report(const u8 *data, int size);
 extern void xbelite2_on_usb_connect(void);
 extern void xbelite2_on_usb_disconnect(void);
 extern int xbelite2_on_gip_message(const u8 *data, int size);
+
+// Forward declarations
+static struct input_dev *xbelite2_setup_input(struct device *dev, int idx);
+static int xbelite2_ff_play(struct input_dev *dev, void *data, struct ff_effect *effect);
 
 // ---- USB GIP state ----
 struct xbelite2_usb {
@@ -38,9 +43,29 @@ struct xbelite2_usb {
 	wait_queue_head_t ring_wait;
 	struct miscdevice miscdev;
 	struct work_struct init_work;
+	struct input_dev *input;
+	u8 hw_profile;
+	bool profile_synced; /* first 0x0C after connect primes hw_profile */
+
+	/* Force-feedback (rumble) URB and buffer */
+	struct urb *irq_out;
+	unsigned char *out_buf;
+	dma_addr_t out_dma;
+	spinlock_t out_lock;
 };
 
 static struct xbelite2_usb *g_usb;
+
+// ---- sysfs: hw_profile (read-only, USB) ----
+static ssize_t usb_hw_profile_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct usb_interface *intf = to_usb_interface(dev);
+	struct xbelite2_usb *d = usb_get_intfdata(intf);
+
+	return sysfs_emit(buf, "%u\n", d ? d->hw_profile : 0);
+}
+static DEVICE_ATTR(hw_profile, 0444, usb_hw_profile_show, NULL);
 
 // ---- BT misc device (ring buffer, like USB) ----
 static struct {
@@ -51,7 +76,24 @@ static struct {
 	struct miscdevice miscdev;
 	bool active;
 	struct hid_device *hdev;
+	struct input_dev *input;
+	u8 hw_profile;
+	bool guide_pressed;
+	bool menu_pressed;
+	bool poweroff_sent;
 } g_bt;
+
+// ---- sysfs: hw_profile (read-only, BT) ----
+static ssize_t bt_hw_profile_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "%u\n", g_bt.hw_profile);
+}
+static struct device_attribute dev_attr_bt_hw_profile =
+	__ATTR(hw_profile, 0444, bt_hw_profile_show, NULL);
+
+static void bt_power_off(void);
+
 
 static void bt_ring_push(const u8 *data, int len)
 {
@@ -133,9 +175,19 @@ static const struct file_operations bt_misc_fops = {
 // ---- BT HID ----
 static int bt_probe(struct hid_device *hdev, const struct hid_device_id *id)
 {
-	int ret = hid_parse(hdev);
+	int ret;
+	
+	// Prevent duplicate probe - only allow one BT device at a time
+	if (g_bt.active) {
+		hid_warn(hdev, "BT device already active, rejecting duplicate probe\n");
+		return -EBUSY;
+	}
+	
+	ret = hid_parse(hdev);
 	if (ret) return ret;
-	ret = hid_hw_start(hdev, HID_CONNECT_DRIVER);
+	
+	// Claim HID input to prevent hid_microsoft from creating its own input device
+	ret = hid_hw_start(hdev, HID_CONNECT_HIDRAW);
 	if (ret) return ret;
 
 	spin_lock_init(&g_bt.lock);
@@ -155,7 +207,25 @@ static int bt_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	}
 
 	g_bt.active = true;
+	g_bt.hw_profile = 0;
+	g_bt.guide_pressed = false;
+	g_bt.menu_pressed = false;
+	g_bt.poweroff_sent = false;
 	hid_hw_open(hdev);
+	
+	g_bt.input = xbelite2_setup_input(&hdev->dev, 0);
+	if (!g_bt.input) {
+		hid_warn(hdev, "Failed to create input device\n");
+		misc_deregister(&g_bt.miscdev);
+		hid_hw_close(hdev);
+		hid_hw_stop(hdev);
+		g_bt.active = false;
+		return -ENOMEM;
+	}
+	
+	if (device_create_file(&hdev->dev, &dev_attr_bt_hw_profile))
+		hid_warn(hdev, "failed to create hw_profile sysfs attr\n");
+
 	xbelite2_on_bt_connect();
 	hid_info(hdev, "Xbox Elite Series 2 connected (BT)\n");
 	return 0;
@@ -163,6 +233,12 @@ static int bt_probe(struct hid_device *hdev, const struct hid_device_id *id)
 
 static void bt_remove(struct hid_device *hdev)
 {
+	device_remove_file(&hdev->dev, &dev_attr_bt_hw_profile);
+
+	if (g_bt.input) {
+		input_unregister_device(g_bt.input);
+		g_bt.input = NULL;
+	}
 	g_bt.active = false;
 	g_bt.hdev = NULL;
 	xbelite2_on_bt_disconnect();
@@ -175,9 +251,89 @@ static void bt_remove(struct hid_device *hdev)
 static int bt_raw_event(struct hid_device *hdev, struct hid_report *report,
 			u8 *data, int size)
 {
+	if (g_bt.input && data[0] == 0x01 && size >= 20) {
+		u16 lsx = data[1] | (data[2] << 8);
+		u16 lsy = data[3] | (data[4] << 8);
+		u16 rsx = data[5] | (data[6] << 8);
+		u16 rsy = data[7] | (data[8] << 8);
+		u16 lt = (data[9] | (data[10] << 8)) & 0x03FF;
+		u16 rt = (data[11] | (data[12] << 8)) & 0x03FF;
+		u8 hat = data[13] & 0x0F;
+		u16 btns = data[14] | (data[15] << 8);
+		u8 paddles = size > 19 ? (data[19] & 0x0F) : 0;
+		u8 hw_profile = size > 17 ? (data[17] & 0x03) : 0;
+
+		g_bt.hw_profile = hw_profile;
+
+		if (hw_profile != 0) {
+			paddles = 0;
+		}
+
+		input_report_abs(g_bt.input, ABS_X, (s16)(lsx - 32768));
+		input_report_abs(g_bt.input, ABS_Y, (s16)(lsy - 32768));
+		input_report_abs(g_bt.input, ABS_RX, (s16)(rsx - 32768));
+		input_report_abs(g_bt.input, ABS_RY, (s16)(rsy - 32768));
+		input_report_abs(g_bt.input, ABS_Z, lt);
+		input_report_abs(g_bt.input, ABS_RZ, rt);
+
+		input_report_key(g_bt.input, BTN_A, btns & (1 << 0));
+		input_report_key(g_bt.input, BTN_B, btns & (1 << 1));
+		input_report_key(g_bt.input, BTN_X, btns & (1 << 3));
+		input_report_key(g_bt.input, BTN_Y, btns & (1 << 4));
+		input_report_key(g_bt.input, BTN_TL, btns & (1 << 6));
+		input_report_key(g_bt.input, BTN_TR, btns & (1 << 7));
+		input_report_key(g_bt.input, BTN_SELECT, btns & (1 << 10));
+		
+		g_bt.menu_pressed = (btns & (1 << 11)) != 0;
+		g_bt.guide_pressed = (btns & (1 << 12)) != 0;
+		
+		input_report_key(g_bt.input, BTN_START, g_bt.menu_pressed);
+		input_report_key(g_bt.input, BTN_MODE, g_bt.guide_pressed);
+		input_report_key(g_bt.input, BTN_THUMBL, btns & (1 << 13));
+		input_report_key(g_bt.input, BTN_THUMBR, btns & (1 << 14));
+		
+		if (g_bt.guide_pressed && g_bt.menu_pressed && !g_bt.poweroff_sent) {
+			bt_power_off();
+			g_bt.poweroff_sent = true;
+		} else if (!g_bt.guide_pressed || !g_bt.menu_pressed) {
+			g_bt.poweroff_sent = false;
+		}
+
+		input_report_abs(g_bt.input, ABS_HAT0X, 
+			(hat == 3 || hat == 4 || hat == 2) ? 1 : ((hat == 7 || hat == 8 || hat == 6) ? -1 : 0));
+		input_report_abs(g_bt.input, ABS_HAT0Y,
+			(hat == 5 || hat == 6 || hat == 4) ? 1 : ((hat == 1 || hat == 8 || hat == 2) ? -1 : 0));
+
+		input_report_key(g_bt.input, BTN_TRIGGER_HAPPY1, paddles & 0x01);
+		input_report_key(g_bt.input, BTN_TRIGGER_HAPPY2, paddles & 0x02);
+		input_report_key(g_bt.input, BTN_TRIGGER_HAPPY3, paddles & 0x04);
+		input_report_key(g_bt.input, BTN_TRIGGER_HAPPY4, paddles & 0x08);
+
+		input_sync(g_bt.input);
+	}
+	
 	bt_ring_push(data, size);
 	return xbelite2_on_bt_report(data, size);
 }
+
+static void bt_power_off(void)
+{
+	static const u8 pwr_off[] = {0x05, 0x20, 0x00, 0x01, 0x06};
+	int ret;
+	
+	if (!g_bt.active || !g_bt.hdev) return;
+	
+	ret = hid_hw_output_report(g_bt.hdev, (u8 *)pwr_off, sizeof(pwr_off));
+	if (ret < 0) {
+		ret = hid_hw_raw_request(g_bt.hdev, pwr_off[0], (u8 *)pwr_off, 
+					 sizeof(pwr_off), HID_OUTPUT_REPORT, HID_REQ_SET_REPORT);
+	}
+	
+	if (ret >= 0) {
+		pr_info("xbelite2: BT power-off command sent (Xbox+Menu)\n");
+	}
+}
+
 
 static const struct hid_device_id bt_ids[] = {
 	{ HID_BLUETOOTH_DEVICE(VENDOR_MS, PID_BLE) },
@@ -193,6 +349,113 @@ static struct hid_driver bt_driver = {
 	.remove    = bt_remove,
 	.raw_event = bt_raw_event,
 };
+
+// ---- Input device setup ----
+static void xbelite2_ff_irq_out(struct urb *urb)
+{
+	/* URB completion callback - nothing to do */
+}
+
+static int xbelite2_ff_play(struct input_dev *dev, void *data, struct ff_effect *effect)
+{
+	struct xbelite2_usb *usb_priv = input_get_drvdata(dev);
+	u16 strong = effect->u.rumble.strong_magnitude;
+	u16 weak = effect->u.rumble.weak_magnitude;
+	u8 strong_motor = (strong * 100) / 65535;
+	u8 weak_motor = (weak * 100) / 65535;
+	unsigned long flags;
+	int ret;
+
+	if (!usb_priv || !usb_priv->udev || !usb_priv->irq_out)
+		return -ENODEV;
+
+	spin_lock_irqsave(&usb_priv->out_lock, flags);
+	
+	usb_priv->out_buf[0] = 0x09;
+	usb_priv->out_buf[1] = 0x00;
+	usb_priv->out_buf[2] = 0x00;
+	usb_priv->out_buf[3] = 0x09;
+	usb_priv->out_buf[4] = 0x00;
+	usb_priv->out_buf[5] = 0x0F;
+	usb_priv->out_buf[6] = 0;
+	usb_priv->out_buf[7] = 0;
+	usb_priv->out_buf[8] = strong_motor;
+	usb_priv->out_buf[9] = weak_motor;
+	usb_priv->out_buf[10] = 0xFF;
+	usb_priv->out_buf[11] = 0x00;
+	usb_priv->out_buf[12] = 0xEB;
+
+	usb_priv->irq_out->transfer_buffer_length = 13;
+	
+	ret = usb_submit_urb(usb_priv->irq_out, GFP_ATOMIC);
+	
+	spin_unlock_irqrestore(&usb_priv->out_lock, flags);
+
+	if (ret < 0)
+		pr_err("xbelite2_ff_play: usb_submit_urb failed: %d\n", ret);
+
+	return ret;
+}
+
+static struct input_dev *xbelite2_setup_input(struct device *dev, int idx)
+{
+	struct input_dev *input;
+	int ret;
+
+	input = input_allocate_device();
+	if (!input)
+		return NULL;
+
+	input->name = "Xbox Elite Wireless Controller Series 2";
+	input->id.bustype = BUS_USB;
+	input->id.vendor = VENDOR_MS;
+	input->id.product = PID_USB;
+	input->id.version = 0x0100;
+	input->dev.parent = dev;
+
+	input_set_capability(input, EV_KEY, BTN_A);
+	input_set_capability(input, EV_KEY, BTN_B);
+	input_set_capability(input, EV_KEY, BTN_X);
+	input_set_capability(input, EV_KEY, BTN_Y);
+	input_set_capability(input, EV_KEY, BTN_TL);
+	input_set_capability(input, EV_KEY, BTN_TR);
+	input_set_capability(input, EV_KEY, BTN_SELECT);
+	input_set_capability(input, EV_KEY, BTN_START);
+	input_set_capability(input, EV_KEY, BTN_MODE);
+	input_set_capability(input, EV_KEY, BTN_THUMBL);
+	input_set_capability(input, EV_KEY, BTN_THUMBR);
+	input_set_capability(input, EV_KEY, BTN_TRIGGER_HAPPY1);
+	input_set_capability(input, EV_KEY, BTN_TRIGGER_HAPPY2);
+	input_set_capability(input, EV_KEY, BTN_TRIGGER_HAPPY3);
+	input_set_capability(input, EV_KEY, BTN_TRIGGER_HAPPY4);
+
+	input_set_abs_params(input, ABS_X, -32768, 32767, 16, 128);
+	input_set_abs_params(input, ABS_Y, -32768, 32767, 16, 128);
+	input_set_abs_params(input, ABS_RX, -32768, 32767, 16, 128);
+	input_set_abs_params(input, ABS_RY, -32768, 32767, 16, 128);
+	input_set_abs_params(input, ABS_Z, 0, 1023, 0, 0);
+	input_set_abs_params(input, ABS_RZ, 0, 1023, 0, 0);
+	input_set_abs_params(input, ABS_HAT0X, -1, 1, 0, 0);
+	input_set_abs_params(input, ABS_HAT0Y, -1, 1, 0, 0);
+
+	input_set_capability(input, EV_FF, FF_RUMBLE);
+	ret = input_ff_create_memless(input, NULL, xbelite2_ff_play);
+	if (ret) {
+		input_free_device(input);
+		return NULL;
+	}
+
+	ret = input_register_device(input);
+	if (ret) {
+		pr_err("xbelite2: input_register_device failed: %d\n", ret);
+		input_free_device(input);
+		return NULL;
+	}
+	
+	pr_info("xbelite2: Input device registered successfully\n");
+
+	return input;
+}
 
 // ---- USB GIP ring buffer + misc device ----
 static void ring_push(struct xbelite2_usb *d, const u8 *data, int len)
@@ -334,6 +597,7 @@ static void usb_irq(struct urb *urb)
 	struct xbelite2_usb *d = urb->context;
 	unsigned char *data = d->in_buf;
 	int len = urb->actual_length;
+	struct input_dev *input = d->input;
 
 	if (urb->status) goto resubmit;
 
@@ -344,6 +608,104 @@ static void usb_irq(struct urb *urb)
 		}
 		if (xbelite2_on_gip_message(data, len))
 			ring_push(d, data, len);
+
+		// Input event reporting
+		if (input) {
+			// Guide button (0x07) - payload byte 0 (data[4])
+			if (data[0] == 0x07 && len >= 5) {
+				input_report_key(input, BTN_MODE, data[4] != 0);
+				input_sync(input);
+			}
+
+			// Profile switch (0x1E sub 0x03) - track hw_profile
+			if (data[0] == 0x1E && len >= 6 && data[4] == 0x03) {
+				d->hw_profile = data[5];
+			}
+
+			// Elite extended report (0x0C) - profile at payload byte 15 (data[19])
+			if (data[0] == 0x0C && len >= 20) {
+				u8 new_profile = data[19];
+				if (!d->profile_synced) {
+					// First post-connect report: trust it unconditionally
+					// so sysfs reflects the controller's active profile.
+					d->hw_profile = new_profile;
+					d->profile_synced = true;
+				} else {
+					// Filter idle glitches where profile byte reads 0.
+					int has_input = 0;
+					int i;
+					for (i = 4; i < 19; i++) {
+						if (data[i] != 0) {
+							has_input = 1;
+							break;
+						}
+					}
+					if (new_profile != d->hw_profile &&
+					    (new_profile != 0 || has_input)) {
+						d->hw_profile = new_profile;
+					}
+				}
+			}
+
+			// Input report (0x20) - GIP input data
+			if (data[0] == 0x20 && len >= 18) {
+				u8 b1 = data[4];  // Buttons byte 1
+				u8 b2 = data[5];  // Buttons byte 2
+				s16 lx, ly, rx, ry;
+				u16 lt, rt;
+				u8 paddles = 0;
+
+				// Buttons
+				input_report_key(input, BTN_START, b1 & (1 << 2));  // Menu
+				input_report_key(input, BTN_SELECT, b1 & (1 << 3)); // View
+				input_report_key(input, BTN_SOUTH, b1 & (1 << 4));  // A
+				input_report_key(input, BTN_EAST, b1 & (1 << 5));   // B
+				input_report_key(input, BTN_WEST, b1 & (1 << 6));   // X
+				input_report_key(input, BTN_NORTH, b1 & (1 << 7));  // Y
+
+				input_report_key(input, BTN_TL, b2 & (1 << 4));     // LB
+				input_report_key(input, BTN_TR, b2 & (1 << 5));     // RB
+				input_report_key(input, BTN_THUMBL, b2 & (1 << 6)); // LS
+				input_report_key(input, BTN_THUMBR, b2 & (1 << 7)); // RS
+
+				// D-pad
+				input_report_abs(input, ABS_HAT0X, 
+					(b2 & (1 << 3)) ? 1 : ((b2 & (1 << 2)) ? -1 : 0)); // Right:Left
+				input_report_abs(input, ABS_HAT0Y,
+					(b2 & (1 << 1)) ? 1 : ((b2 & (1 << 0)) ? -1 : 0)); // Down:Up
+
+				// Triggers (u16 LE, 0-1023)
+				lt = (u16)data[6] | ((u16)data[7] << 8);
+				rt = (u16)data[8] | ((u16)data[9] << 8);
+				input_report_abs(input, ABS_Z, lt);
+				input_report_abs(input, ABS_RZ, rt);
+
+				// Sticks (i16 LE) - Y axes inverted in GIP
+				lx = (s16)((u16)data[10] | ((u16)data[11] << 8));
+				ly = (s16)((u16)data[12] | ((u16)data[13] << 8));
+				rx = (s16)((u16)data[14] | ((u16)data[15] << 8));
+				ry = (s16)((u16)data[16] | ((u16)data[17] << 8));
+
+				input_report_abs(input, ABS_X, lx);
+				input_report_abs(input, ABS_Y, ~ly);  // Invert Y
+				input_report_abs(input, ABS_RX, rx);
+				input_report_abs(input, ABS_RY, ~ry); // Invert Y
+
+				// Paddles (byte 18) - suppress on hw_profile != 0
+				if (len > 18) {
+					paddles = data[18] & 0x0F;
+					if (d->hw_profile != 0) {
+						paddles = 0; // Suppress on profiles 1-3
+					}
+				}
+				input_report_key(input, BTN_TRIGGER_HAPPY1, paddles & 0x01); // P1
+				input_report_key(input, BTN_TRIGGER_HAPPY2, paddles & 0x02); // P2
+				input_report_key(input, BTN_TRIGGER_HAPPY3, paddles & 0x04); // P3
+				input_report_key(input, BTN_TRIGGER_HAPPY4, paddles & 0x08); // P4
+
+				input_sync(input);
+			}
+		}
 	}
 resubmit:
 	if (d->running)
@@ -360,6 +722,12 @@ static int usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
 
 	if (intf->cur_altsetting->desc.bInterfaceNumber != 0)
 		return -ENODEV;
+	
+	// Prevent duplicate probe - only allow one USB device at a time
+	if (g_usb) {
+		dev_warn(&intf->dev, "USB device already active, rejecting duplicate probe\n");
+		return -EBUSY;
+	}
 	for (i = 0; i < intf->cur_altsetting->desc.bNumEndpoints; i++) {
 		struct usb_endpoint_descriptor *e =
 			&intf->cur_altsetting->endpoint[i].desc;
@@ -385,6 +753,18 @@ static int usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	d->irq_in->transfer_dma = d->in_dma;
 	d->irq_in->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
 
+	d->out_buf = usb_alloc_coherent(udev, 64, GFP_KERNEL, &d->out_dma);
+	if (!d->out_buf) { ret = -ENOMEM; goto err2_5; }
+	d->irq_out = usb_alloc_urb(0, GFP_KERNEL);
+	if (!d->irq_out) { ret = -ENOMEM; goto err2_6; }
+	
+	spin_lock_init(&d->out_lock);
+	usb_fill_int_urb(d->irq_out, udev,
+		usb_sndintpipe(udev, 0x02),
+		d->out_buf, 64, xbelite2_ff_irq_out, d, 4);
+	d->irq_out->transfer_dma = d->out_dma;
+	d->irq_out->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
+
 	d->miscdev.minor = MISC_DYNAMIC_MINOR;
 	d->miscdev.name = "xbelite2";
 	d->miscdev.fops = &misc_fops;
@@ -394,17 +774,36 @@ static int usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
 
 	INIT_WORK(&d->init_work, usb_init_work);
 	d->running = true;
+	d->hw_profile = 0;
+	d->profile_synced = false;
 	g_usb = d;
 	ret = usb_submit_urb(d->irq_in, GFP_KERNEL);
 	if (ret) goto err4;
 
+	dev_info(&intf->dev, "Creating input device...\n");
+	d->input = xbelite2_setup_input(&intf->dev, 1);
+	if (!d->input) {
+		dev_err(&intf->dev, "Failed to create input device\n");
+		usb_kill_urb(d->irq_in);
+		ret = -ENOMEM;
+		goto err4;
+	}
+	dev_info(&intf->dev, "Input device created, setting drvdata\n");
+	input_set_drvdata(d->input, d);
+
 	usb_set_intfdata(intf, d);
+
+	if (device_create_file(&intf->dev, &dev_attr_hw_profile))
+		dev_warn(&intf->dev, "failed to create hw_profile sysfs attr\n");
+
 	xbelite2_on_usb_connect();
 	dev_info(&intf->dev, "Xbox Elite Series 2 connected (USB)\n");
 	return 0;
 
 err4: misc_deregister(&d->miscdev);
-err3: usb_free_urb(d->irq_in);
+err3: usb_free_urb(d->irq_out);
+err2_6: usb_free_coherent(udev, 64, d->out_buf, d->out_dma);
+err2_5: usb_free_urb(d->irq_in);
 err2: usb_free_coherent(udev, d->in_size, d->in_buf, d->in_dma);
 err1: usb_put_dev(udev); kfree(d); return ret;
 }
@@ -416,6 +815,13 @@ static void usb_disconnect(struct usb_interface *intf)
 	static const u8 usb_to_bt[] = {0x05, 0x20, 0x00, 0x0f, 0x00};
 	
 	if (!d) return;
+
+	device_remove_file(&intf->dev, &dev_attr_hw_profile);
+
+	if (d->input) {
+		input_unregister_device(d->input);
+		d->input = NULL;
+	}
 	
 	if (d->running && d->udev) {
 		usb_interrupt_msg(d->udev, usb_sndintpipe(d->udev, 0x02),
@@ -427,10 +833,13 @@ static void usb_disconnect(struct usb_interface *intf)
 	xbelite2_on_usb_disconnect();
 	wake_up_interruptible(&d->ring_wait);
 	usb_kill_urb(d->irq_in);
+	usb_kill_urb(d->irq_out);
 	cancel_work_sync(&d->init_work);
 	misc_deregister(&d->miscdev);
 	usb_free_urb(d->irq_in);
+	usb_free_urb(d->irq_out);
 	usb_free_coherent(d->udev, d->in_size, d->in_buf, d->in_dma);
+	usb_free_coherent(d->udev, 64, d->out_buf, d->out_dma);
 	usb_put_dev(d->udev);
 	usb_set_intfdata(intf, NULL);
 	kfree(d);
@@ -471,3 +880,4 @@ module_init(xbelite2_init);
 module_exit(xbelite2_exit);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Xbox Elite Series 2 Controller driver");
+MODULE_SOFTDEP("pre: ff_memless");

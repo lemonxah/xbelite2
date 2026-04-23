@@ -44,8 +44,9 @@ pub fn begin_write(dev: &mut GipDevice) {
 }
 
 /// Commit written profile data — re-inits extended reports and sends persist command.
-/// Uses fire-and-forget sends to avoid ring buffer response conflicts with the daemon's
-/// read loop (vendor_cmd would block waiting for a response the daemon steals).
+/// Uses fire-and-forget sends to avoid ring buffer response conflicts with any
+/// concurrent reader on `/dev/xbelite2` (vendor_cmd would block waiting for a
+/// response another reader might consume).
 pub fn commit(dev: &mut GipDevice) {
     use std::sync::atomic::{AtomicU8, Ordering};
     static COMMIT_SEQ: AtomicU8 = AtomicU8::new(0xE0);
@@ -134,7 +135,7 @@ pub fn set_shift_button_from_cache(dev: &mut GipDevice, profile: usize, button: 
     commit(dev);
 }
 
-/// Write a remap using cached data (avoids read conflicts with daemon input).
+/// Write a remap using cached data (avoids read conflicts with other readers).
 pub fn write_remap_from_cache(dev: &mut GipDevice, page: u8, mut data: Vec<u8>, from: GipButton, to: GipButton) {
     let fc = from.code();
     let tc = to.code();
@@ -313,6 +314,31 @@ pub fn set_curves(dev: &mut GipDevice, profile: usize, lx: [u8; 6], ly: [u8; 6],
 /// Reset stick curves to default linear.
 pub fn reset_curves(dev: &mut GipDevice, profile: usize) {
     set_curves(dev, profile, DEFAULT_CURVE, DEFAULT_CURVE, DEFAULT_CURVE, DEFAULT_CURVE);
+}
+
+/// Stick inversion mask location in the curves page.
+/// bit0=LY, bit1=RY, bit2=LX, bit3=RX.
+const OFF_STICK_INVERSION: usize = 27;
+
+/// Read the stick inversion bitmask from the curves page (SlotA).
+pub fn get_stick_inversion(dev: &mut GipDevice, profile: usize) -> Option<u8> {
+    let page = PROFILE_CURVES_PAGES[profile][0];
+    let raw = read_page(dev, page, CURVES_SIZE)?;
+    raw.get(OFF_STICK_INVERSION).copied()
+}
+
+/// Set the stick inversion bitmask on both slots of a profile's curves page.
+pub fn set_stick_inversion(dev: &mut GipDevice, profile: usize, mask: u8) {
+    for slot in 0..2 {
+        let page = PROFILE_CURVES_PAGES[profile][slot];
+        if let Some(mut data) = read_page(dev, page, CURVES_SIZE) {
+            if data.len() > OFF_STICK_INVERSION {
+                data[OFF_STICK_INVERSION] = mask;
+                write_page(dev, page, &data);
+            }
+        }
+    }
+    commit(dev);
 }
 
 /// Read all profile data (both slots, mapping + curves).

@@ -10,18 +10,17 @@ The Xbox Elite 2 stores its configuration (button remaps, stick curves, dead zon
 
 This project gives you full control over the Elite 2 on Linux:
 
-- A **kernel module** that claims the controller on USB and BT, providing clean character devices for userspace
-- A **daemon** that translates raw controller input into a standard virtual gamepad, forwards rumble, and handles paddle suppression for hardware-remapped profiles
-- A **CLI tool** that reads and writes the controller's hardware profiles directly over the GIP protocol (USB)
-- A **BT test tool** for testing rumble and dumping raw BT HID reports
+- A **kernel module** that registers the controller as a native Linux input device (like the standard xpad driver) with proper paddle support and automatic paddle suppression on hardware-remapped profiles
+- **CLI tools** that read and write the controller's hardware profiles directly over the GIP protocol
 - A **GUI** for live input display and profile management
+
+**No background daemon required** - the controller works directly with games through the kernel's native input subsystem, with zero CPU overhead during gameplay.
 
 ## Components
 
 | Component | Description |
 |-----------|-------------|
-| **xbelite2** (kmod) | DKMS kernel module. Claims the controller on USB and BT, provides `/dev/xbelite2` (USB) and `/dev/xbelite2_bt` (BT) character devices |
-| **xbelite2d** (daemon) | Reads input from the kernel module, emits a virtual gamepad via uinput, forwards force-feedback/rumble to the controller. Caches hardware profiles from USB to suppress duplicate paddle events in BT mode |
+| **xbelite2** (kmod) | DKMS kernel module. Registers controller as native Linux input device (`/dev/input/eventX`), handles paddle suppression, implements force-feedback. Also provides `/dev/xbelite2` (USB) and `/dev/xbelite2_bt` (BT) character devices for hardware configuration |
 | **xbe2-rw** (CLI) | Reads and writes controller hardware config over USB: profiles, button remaps (normal + shift), LED colors, dead zones, stick curves, vibration, device name |
 | **xbe2-bt** (CLI) | BT testing tool: rumble, raw report dumping |
 | **xbelite2-gui** (GUI) | Qt6/QML app for live input display and profile management |
@@ -43,22 +42,23 @@ The Elite 2 has a physical profile switch with 4 positions:
 - **Profile 0 (Default)** — no hardware remaps, paddles report as paddles
 - **Profiles 1, 2, 3** — each has its own button remaps, curves, dead zones, and LED color stored on the controller
 
-The controller handles all remapping in its firmware. The daemon's job is to:
-1. Read raw input reports and emit them as a standard Linux gamepad
-2. Forward rumble/force-feedback from games to the controller
-3. Suppress paddle events when paddles are hardware-remapped (to avoid duplicate inputs)
+The controller handles all remapping in its firmware. When you remap a paddle to another button (e.g., P1 → A) in the hardware profile, pressing that paddle sends BOTH the paddle event AND the remapped button event. This would cause duplicate inputs in games.
 
-When connected via USB, the daemon reads and caches the hardware profile config. When the controller later connects via BT, the daemon uses this cache to know which paddles are remapped.
+**The kernel module solves this** by automatically suppressing paddle events on profiles 1-3 where remapping is configured. On profile 0 (default), all paddles work normally.
 
 ## Installation
 
 ### Arch Linux (AUR)
 
-```
+```bash
 yay -S xbelite2-dkms
 ```
 
-Installs the kernel module (DKMS), daemon, CLI tools, GUI, udev rules, and systemd service.
+Installs the kernel module (DKMS), CLI tools, GUI, udev rules, and modprobe configuration.
+
+**Note**: The package blacklists `hid_microsoft` and `xpad` to prevent driver conflicts. This only affects:
+- `hid_microsoft`: Old quirky Microsoft devices from the 2000s (modern peripherals work with `hid-generic`)
+- `xpad`: Generic Xbox controller driver (if you have non-Elite Xbox controllers, see manual setup instructions)
 
 ### From source
 
@@ -68,14 +68,11 @@ Requirements:
 - Qt 6 with QtQuick/QML (`qt6-base`, `qt6-declarative`)
 
 ```bash
-# Build everything
-cargo build --workspace --release
-
 # Build and load kernel module
 just kmod
 
-# Install daemon + service
-just install
+# Build CLI tools and GUI
+cargo build --workspace --release
 ```
 
 ### Manual setup
@@ -86,8 +83,8 @@ sudo cp 99-xbelite2.rules /etc/udev/rules.d/
 sudo cp pkg/modprobe.d/xbelite2-blacklist.conf /etc/modprobe.d/
 sudo udevadm control --reload-rules
 
-# Start daemon
-sudo systemctl enable --now xbelite2d
+# Load kernel module
+sudo modprobe xbelite2
 ```
 
 ## Usage
@@ -157,36 +154,40 @@ Controller (BT/USB)
     v
 xbelite2.ko (kernel module)
     |
-    +--> /dev/xbelite2      (USB GIP ring buffer, read + write)
-    +--> /dev/xbelite2_bt   (BT HID ring buffer, read + write)
+    +--> Native input device (/dev/input/eventX)
+    |    |
+    |    +--> Games (direct, zero latency)
+    |    +--> Paddle suppression on profiles 1-3
+    |    +--> Force-feedback (rumble) support
     |
-    +---------------------------+
-    |                           |
-    v                           v
-xbelite2d (daemon)         xbe2-rw / xbe2-bt (CLI tools)
-    |                           |
-    +--> parse input            +--> read/write hardware profiles
-    +--> suppress remapped      +--> LED color, rumble, name
-         paddles                +--> button remaps, curves, deadzones
-    +--> emit virtual gamepad
-    +--> forward rumble
-    |
-    +--> /run/xbelite2.sock
-            |
-            v
-      xbelite2-gui
+    +--> /dev/xbelite2      (USB GIP ring buffer for config)
+    +--> /dev/xbelite2_bt   (BT HID ring buffer for config)
+         |
+         v
+    xbe2-rw / xbe2-bt / GUI
+         |
+         +--> Read/write hardware profiles
+         +--> LED color, rumble test, device name
+         +--> Button remaps, stick curves, dead zones
 ```
+
+### Benefits
+
+- **No daemon overhead** - Zero CPU/RAM usage during gameplay
+- **Native input device** - Works with all Linux games that support gamepads
+- **Lower latency** - Direct kernel-to-game input path
+- **Automatic paddle suppression** - No duplicate inputs on profiles 1-3
+- **Standard force-feedback** - Rumble works through Linux FF subsystem
 
 ### Workspace layout
 
 ```
-xboxelite2/
-  daemon/       xbelite2d daemon
+xbelite2/
+  kmod/         kernel module (C)
   gip/          shared GIP protocol library
   xbe2-rw/      USB CLI config tool
   xbe2-bt/      BT CLI test tool
   gui/          Qt6/QML GUI
-  kmod/         kernel module (C + Rust)
   pkg/          Arch Linux packaging
   docs/         protocol documentation
 ```
@@ -194,6 +195,10 @@ xboxelite2/
 ## Protocol
 
 See [docs/protocol.md](docs/protocol.md) for the reverse-engineered GIP protocol reference.
+
+## Testing
+
+See [TESTING.md](TESTING.md) for comprehensive testing procedures and troubleshooting.
 
 ## License
 
