@@ -15,7 +15,7 @@ bump new_version:
     # PKGBUILD
     sed -i 's/^pkgver=.*/pkgver={{new_version}}/' pkg/PKGBUILD
     # Install hooks
-    sed -i 's|xbelite2-dkms/[0-9.]*|xbelite2-dkms/{{new_version}}|g' pkg/xbelite2.install xbelite2.install
+    sed -i 's|xbelite2-dkms/[0-9.]*|xbelite2-dkms/{{new_version}}|g' pkg/xbelite2.install
     @echo "Bumped to {{new_version}}"
 
 # Build and reload kernel module (dev cycle)
@@ -63,7 +63,7 @@ aur_dir := "../aur/xbelite2-dkms"
 # Bump, commit, tag, and push. Optional message: just release 0.5.0 "fix remapping"
 release new_version msg="":
     just bump {{new_version}}
-    git add Cargo.toml Cargo.lock kmod/dkms.conf pkg/PKGBUILD pkg/xbelite2.install xbelite2.install
+    git add Cargo.toml Cargo.lock kmod/dkms.conf pkg/PKGBUILD pkg/xbelite2.install
     git commit -am "v{{new_version}}{{ if msg != "" { ": " + msg } else { "" } }}"
     git tag -a "v{{new_version}}" -m "v{{new_version}}{{ if msg != "" { ": " + msg } else { "" } }}"
     git push && git push --tags
