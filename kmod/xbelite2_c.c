@@ -25,7 +25,7 @@ extern void xbelite2_on_usb_disconnect(void);
 extern int xbelite2_on_gip_message(const u8 *data, int size);
 
 // Forward declarations
-static struct input_dev *xbelite2_setup_input(struct device *dev, int idx);
+static struct input_dev *xbelite2_setup_input(struct device *dev, u16 bustype, u16 product);
 static int xbelite2_ff_play(struct input_dev *dev, void *data, struct ff_effect *effect);
 
 // ---- USB GIP state ----
@@ -213,7 +213,10 @@ static int bt_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	g_bt.poweroff_sent = false;
 	hid_hw_open(hdev);
 	
-	g_bt.input = xbelite2_setup_input(&hdev->dev, 0);
+	// Match the underlying BT HID device's bus/product so userspace (SDL2,
+	// Steam) sees the same fingerprint on evdev and hidraw paths and
+	// deduplicates the controller.
+	g_bt.input = xbelite2_setup_input(&hdev->dev, BUS_BLUETOOTH, hdev->product);
 	if (!g_bt.input) {
 		hid_warn(hdev, "Failed to create input device\n");
 		misc_deregister(&g_bt.miscdev);
@@ -397,7 +400,7 @@ static int xbelite2_ff_play(struct input_dev *dev, void *data, struct ff_effect 
 	return ret;
 }
 
-static struct input_dev *xbelite2_setup_input(struct device *dev, int idx)
+static struct input_dev *xbelite2_setup_input(struct device *dev, u16 bustype, u16 product)
 {
 	struct input_dev *input;
 	int ret;
@@ -407,9 +410,9 @@ static struct input_dev *xbelite2_setup_input(struct device *dev, int idx)
 		return NULL;
 
 	input->name = "Xbox Elite Wireless Controller Series 2";
-	input->id.bustype = BUS_USB;
+	input->id.bustype = bustype;
 	input->id.vendor = VENDOR_MS;
-	input->id.product = PID_USB;
+	input->id.product = product;
 	input->id.version = 0x0100;
 	input->dev.parent = dev;
 
@@ -785,7 +788,7 @@ static int usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	if (ret) goto err4;
 
 	dev_info(&intf->dev, "Creating input device...\n");
-	d->input = xbelite2_setup_input(&intf->dev, 1);
+	d->input = xbelite2_setup_input(&intf->dev, BUS_USB, PID_USB);
 	if (!d->input) {
 		dev_err(&intf->dev, "Failed to create input device\n");
 		usb_kill_urb(d->irq_in);
