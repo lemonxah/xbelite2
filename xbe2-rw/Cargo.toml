@@ -1,6 +1,6 @@
 [package]
 name = "xbe2-rw"
-version = "0.8.13"
+version = "0.9.0"
 edition = "2021"
 description = "CLI tool for reading/writing Xbox Elite Series 2 controller config"
 license = "GPL-2.0-only"
