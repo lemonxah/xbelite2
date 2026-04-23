@@ -59,6 +59,10 @@ pub fn commit(dev: &mut GipDevice) {
     let _ = dev.send(&[0x4D, 0x10, seq, 0x01, 0x03]);
     std::thread::sleep(std::time::Duration::from_millis(150));
     dev.drain();
+    // The persist command leaves the controller's live LED in a "write-mode"
+    // state (red on this hardware). Tell it to return to the stored profile
+    // color so the LED reflects the profile the user is on, not the write.
+    crate::led::off(dev);
 }
 
 /// Read the mapping page for a profile (0-indexed) and slot (0=A/normal, 1=B/shift).
@@ -176,6 +180,18 @@ pub fn remap_paddles(dev: &mut GipDevice, profile: usize, remaps: &[(usize, GipB
                 data[OFF_PADDLES + paddle_idx] = to.code();
             }
         }
+        write_page(dev, page, &data);
+    }
+    commit(dev);
+}
+
+/// Remap a single paddle (0..=3) in normal (SlotA) or shift (SlotB) mode.
+/// `slot`: 0=SlotA/normal, 1=SlotB/shift.
+pub fn remap_paddle(dev: &mut GipDevice, profile: usize, slot: usize, paddle_idx: usize, to: GipButton) {
+    if paddle_idx >= 4 || slot >= 2 { return; }
+    let page = PROFILE_MAPPING_PAGES[profile][slot];
+    if let Some(mut data) = read_page(dev, page, MAPPING_SIZE) {
+        data[OFF_PADDLES + paddle_idx] = to.code();
         write_page(dev, page, &data);
     }
     commit(dev);

@@ -652,6 +652,40 @@ impl qobject::ProfileModel {
         let normal_str = normal_dst.to_string();
         let shift_str = shift_dst.to_string();
 
+        // Paddles live in a different region of the mapping page and aren't
+        // represented in the GipButton enum, so handle them explicitly.
+        let paddle_idx = match src_str.as_str() {
+            "P1" => Some(0usize),
+            "P2" => Some(1usize),
+            "P3" => Some(2usize),
+            "P4" => Some(3usize),
+            _ => None,
+        };
+
+        if let Some(p_idx) = paddle_idx {
+            if !normal_str.is_empty() {
+                if let Some(to) = xbelite2_gip::types::GipButton::from_name(&normal_str) {
+                    self.rust().writer.send(WriteOp::SetPaddle {
+                        profile_idx: idx,
+                        slot: 0,
+                        paddle_idx: p_idx,
+                        to,
+                    });
+                }
+            }
+            if !shift_str.is_empty() {
+                if let Some(to) = xbelite2_gip::types::GipButton::from_name(&shift_str) {
+                    self.rust().writer.send(WriteOp::SetPaddle {
+                        profile_idx: idx,
+                        slot: 1,
+                        paddle_idx: p_idx,
+                        to,
+                    });
+                }
+            }
+            return;
+        }
+
         let src_btn = match xbelite2_gip::types::GipButton::from_name(&src_str) {
             Some(b) => b,
             None => return,

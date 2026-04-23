@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-// C shim — driver registration + kernel API calls.
-// Logic lives in xbelite2_rust.rs.
+// Driver registration + kernel API calls.
+// Per-report logic lives in xbelite2_logic.c.
 
 #include <linux/module.h>
 #include <linux/hid.h>
@@ -655,13 +655,17 @@ static void usb_irq(struct urb *urb)
 				u16 lt, rt;
 				u8 paddles = 0;
 
-				// Buttons
+				// Buttons — use BTN_A/B/X/Y to match BT path and xpad convention.
+				// Note: in Linux headers BTN_X == BTN_NORTH and BTN_Y == BTN_WEST;
+				// reporting via BTN_X/BTN_Y keeps Xbox labels consistent across
+				// USB and BT connections (games that read raw evdev see the same
+				// keycodes either way).
 				input_report_key(input, BTN_START, b1 & (1 << 2));  // Menu
 				input_report_key(input, BTN_SELECT, b1 & (1 << 3)); // View
-				input_report_key(input, BTN_SOUTH, b1 & (1 << 4));  // A
-				input_report_key(input, BTN_EAST, b1 & (1 << 5));   // B
-				input_report_key(input, BTN_WEST, b1 & (1 << 6));   // X
-				input_report_key(input, BTN_NORTH, b1 & (1 << 7));  // Y
+				input_report_key(input, BTN_A, b1 & (1 << 4));      // A
+				input_report_key(input, BTN_B, b1 & (1 << 5));      // B
+				input_report_key(input, BTN_X, b1 & (1 << 6));      // X
+				input_report_key(input, BTN_Y, b1 & (1 << 7));      // Y
 
 				input_report_key(input, BTN_TL, b2 & (1 << 4));     // LB
 				input_report_key(input, BTN_TR, b2 & (1 << 5));     // RB

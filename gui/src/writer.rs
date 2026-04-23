@@ -16,6 +16,8 @@ pub enum WriteOp {
     SetColor { profile_idx: usize, r: u8, g: u8, b: u8 },
     SetRemapNormal { profile_idx: usize, from: GipButton, to: GipButton },
     SetRemapShift { profile_idx: usize, from: GipButton, to: GipButton },
+    /// Remap a paddle (paddle_idx 0..=3) in SlotA (normal) or SlotB (shift).
+    SetPaddle { profile_idx: usize, slot: usize, paddle_idx: usize, to: GipButton },
     SetStickInversion { profile_idx: usize, mask: u8 },
     SetDeviceName { name: String },
     /// Start rumble; worker schedules an auto-stop after `duration_ms`.
@@ -74,6 +76,9 @@ fn exec(dev: &mut GipDevice, op: WriteOp, tx: &Sender<WriteOp>) {
         }
         WriteOp::SetRemapShift { profile_idx, from, to } => {
             profile::remap_shift(dev, profile_idx, &[(from, to)]);
+        }
+        WriteOp::SetPaddle { profile_idx, slot, paddle_idx, to } => {
+            profile::remap_paddle(dev, profile_idx, slot, paddle_idx, to);
         }
         WriteOp::SetStickInversion { profile_idx, mask } => {
             profile::set_stick_inversion(dev, profile_idx, mask);
