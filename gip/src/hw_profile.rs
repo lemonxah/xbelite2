@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
 
 use crate::transport::GipDevice;
 use crate::types::*;
@@ -94,6 +96,39 @@ impl HwProfile {
         data[OFF_REMAP_EXT..OFF_REMAP_EXT + 8].copy_from_slice(&self.shift_ext);
         data
     }
+}
+
+/// Default on-disk cache path: `$XDG_CACHE_HOME/xbelite2/hw_profiles.json`,
+/// falling back to `~/.cache/xbelite2/hw_profiles.json`.
+pub fn default_cache_path() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("XDG_CACHE_HOME") {
+        return Some(PathBuf::from(dir).join("xbelite2").join("hw_profiles.json"));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return Some(PathBuf::from(home).join(".cache/xbelite2/hw_profiles.json"));
+    }
+    None
+}
+
+/// Save the in-memory cache to disk so it can be shown while the controller
+/// is connected over BT (where we can't read profile pages).
+pub fn save(cache: &HwProfileCache) -> std::io::Result<()> {
+    let path = default_cache_path()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no HOME/XDG_CACHE_HOME"))?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(cache)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    fs::write(&path, json)
+}
+
+/// Load the cached profile state from disk. Returns `None` if the file is
+/// missing or unparseable.
+pub fn load() -> Option<HwProfileCache> {
+    let path = default_cache_path()?;
+    let data = fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&data).ok()
 }
 
 /// Read all 3 hardware profiles from the controller (USB only) and return the cache.

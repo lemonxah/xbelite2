@@ -332,6 +332,7 @@ impl qobject::ProfileModel {
                 }
             }
             self.as_mut().rust_mut().sysfs_path = info.sysfs_path;
+            // USB: refresh from controller + persist. BT: load last USB snapshot.
             self.as_mut().refresh_hw_cache();
             self.as_mut().update_profile_color_from_cache();
         } else {
@@ -488,6 +489,7 @@ impl qobject::ProfileModel {
         let idx = (hw - 1) as usize;
         self.as_mut().rust_mut().hw_cache.profiles[idx].color = Some((r, g, b));
         self.as_mut().set_profile_color(hex);
+        self.as_mut().save_hw_cache();
         self.rust().writer.send(WriteOp::SetColor { profile_idx: idx, r, g, b });
     }
 
@@ -613,6 +615,7 @@ impl qobject::ProfileModel {
 
         // Optimistic cache update; hardware write off-thread.
         self.as_mut().rust_mut().hw_cache.profiles[idx].stick_inversion = mask;
+        self.as_mut().save_hw_cache();
         self.rust().writer.send(WriteOp::SetStickInversion { profile_idx: idx, mask });
     }
 
@@ -642,7 +645,7 @@ impl qobject::ProfileModel {
         // TODO: Implement shift button configuration when xbe2-rw supports it
     }
 
-    fn set_hw_remap(self: Pin<&mut Self>, src: QString, normal_dst: QString, shift_dst: QString) {
+    fn set_hw_remap(mut self: Pin<&mut Self>, src: QString, normal_dst: QString, shift_dst: QString) {
         if !self.rust().is_usb { return; }
         let hw = self.rust().hw_profile as u8;
         if hw < 1 || hw > 3 { return; }
@@ -665,6 +668,10 @@ impl qobject::ProfileModel {
         if let Some(p_idx) = paddle_idx {
             if !normal_str.is_empty() {
                 if let Some(to) = xbelite2_gip::types::GipButton::from_name(&normal_str) {
+                    // Optimistic cache update so get_hw_profile_info reflects the
+                    // new binding across profile switches without waiting for a
+                    // full refresh_hw_cache.
+                    self.as_mut().rust_mut().hw_cache.profiles[idx].paddles[p_idx] = to.code();
                     self.rust().writer.send(WriteOp::SetPaddle {
                         profile_idx: idx,
                         slot: 0,
@@ -675,6 +682,7 @@ impl qobject::ProfileModel {
             }
             if !shift_str.is_empty() {
                 if let Some(to) = xbelite2_gip::types::GipButton::from_name(&shift_str) {
+                    self.as_mut().rust_mut().hw_cache.profiles[idx].shift_paddles[p_idx] = to.code();
                     self.rust().writer.send(WriteOp::SetPaddle {
                         profile_idx: idx,
                         slot: 1,
@@ -683,6 +691,7 @@ impl qobject::ProfileModel {
                     });
                 }
             }
+            self.as_mut().save_hw_cache();
             return;
         }
 
@@ -693,6 +702,13 @@ impl qobject::ProfileModel {
 
         if !normal_str.is_empty() {
             if let Some(to) = xbelite2_gip::types::GipButton::from_name(&normal_str) {
+                let src_code = src_btn.code();
+                let p = &mut self.as_mut().rust_mut().hw_cache.profiles[idx];
+                if (0x04..=0x07).contains(&src_code) {
+                    p.face[(src_code - 0x04) as usize] = to.code();
+                } else if let Some(s) = xbelite2_gip::types::ext_slot_for_button(src_code) {
+                    p.ext[s] = to.code();
+                }
                 self.rust().writer.send(WriteOp::SetRemapNormal {
                     profile_idx: idx,
                     from: src_btn,
@@ -703,6 +719,13 @@ impl qobject::ProfileModel {
 
         if !shift_str.is_empty() {
             if let Some(to) = xbelite2_gip::types::GipButton::from_name(&shift_str) {
+                let src_code = src_btn.code();
+                let p = &mut self.as_mut().rust_mut().hw_cache.profiles[idx];
+                if (0x04..=0x07).contains(&src_code) {
+                    p.shift_face[(src_code - 0x04) as usize] = to.code();
+                } else if let Some(s) = xbelite2_gip::types::ext_slot_for_button(src_code) {
+                    p.shift_ext[s] = to.code();
+                }
                 self.rust().writer.send(WriteOp::SetRemapShift {
                     profile_idx: idx,
                     from: src_btn,
@@ -710,6 +733,8 @@ impl qobject::ProfileModel {
                 });
             }
         }
+
+        self.as_mut().save_hw_cache();
     }
 
     fn load_profile(mut self: Pin<&mut Self>, idx: usize) {
@@ -852,26 +877,41 @@ impl qobject::ProfileModel {
         }
     }
 
-    /// Open /dev/xbelite2 and read all 3 hardware profiles into the in-memory
-    /// cache. Called once per connect; subsequent writes update the cache
-    /// optimistically. USB only.
+    /// Populate the in-memory cache. On USB, read live from the controller and
+    /// persist to disk. On BT, fall back to the last USB snapshot from disk so
+    /// the GUI can still show what the profiles were last programmed to be.
     fn refresh_hw_cache(mut self: Pin<&mut Self>) {
-        if !self.rust().is_usb {
+        if self.rust().is_usb {
+            match xbelite2_gip::transport::GipDevice::open_usb() {
+                Ok(mut dev) => {
+                    dev.unlock();
+                    let cache = xbelite2_gip::hw_profile::read_from_controller(&mut dev);
+                    self.as_mut().rust_mut().hw_cache = cache;
+                    self.as_mut().rust_mut().hw_cache_loaded = true;
+                    let _ = xbelite2_gip::hw_profile::save(&self.rust().hw_cache);
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("refresh_hw_cache: failed to open /dev/xbelite2: {e}");
+                    // fall through to disk load
+                }
+            }
+        }
+        // BT (or USB open failed): show the last known snapshot from disk.
+        if let Some(cache) = xbelite2_gip::hw_profile::load() {
+            self.as_mut().rust_mut().hw_cache = cache;
+            self.as_mut().rust_mut().hw_cache_loaded = true;
+        } else {
             self.as_mut().rust_mut().hw_cache_loaded = false;
-            return;
         }
-        match xbelite2_gip::transport::GipDevice::open_usb() {
-            Ok(mut dev) => {
-                dev.unlock();
-                let cache = xbelite2_gip::hw_profile::read_from_controller(&mut dev);
-                self.as_mut().rust_mut().hw_cache = cache;
-                self.as_mut().rust_mut().hw_cache_loaded = true;
-            }
-            Err(e) => {
-                eprintln!("refresh_hw_cache: failed to open /dev/xbelite2: {e}");
-                self.as_mut().rust_mut().hw_cache_loaded = false;
-            }
-        }
+    }
+
+    /// Persist the current in-memory cache to disk. Called after every
+    /// optimistic write so the on-disk snapshot stays current for later BT
+    /// sessions.
+    fn save_hw_cache(self: Pin<&mut Self>) {
+        if !self.rust().hw_cache_loaded { return; }
+        let _ = xbelite2_gip::hw_profile::save(&self.rust().hw_cache);
     }
 
     fn set_stick_deadzone(mut self: Pin<&mut Self>, stick: i32, value: i32) {
