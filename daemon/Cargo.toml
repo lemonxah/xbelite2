@@ -1,6 +1,6 @@
 [package]
 name = "xbelite2"
-version = "0.8.12"
+version = "0.8.13"
 edition = "2021"
 description = "Xbox Elite Series 2 controller driver and profile manager for Linux"
 license = "GPL-2.0-only"
