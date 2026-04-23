@@ -671,21 +671,21 @@ dependencies = [
 
 [[package]]
 name = "xbe2-bt"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "xbelite2-gip",
 ]
 
 [[package]]
 name = "xbe2-rw"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "xbelite2-gip",
 ]
 
 [[package]]
 name = "xbelite2-gip"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "libc",
  "serde",
@@ -694,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "xbelite2-gui"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "cxx",
  "cxx-qt",
