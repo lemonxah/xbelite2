@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// Driver registration + kernel API calls.
-// Per-report logic lives in xbelite2_logic.c.
+// Xbox Elite Series 2 controller driver.
 
 #include <linux/module.h>
 #include <linux/hid.h>
@@ -15,14 +14,6 @@
 #define PID_BLE      0x0B22
 #define PID_BT       0x0B05
 #define RING_SIZE    4096
-
-// Rust callbacks
-extern void xbelite2_on_bt_connect(void);
-extern void xbelite2_on_bt_disconnect(void);
-extern int xbelite2_on_bt_report(const u8 *data, int size);
-extern void xbelite2_on_usb_connect(void);
-extern void xbelite2_on_usb_disconnect(void);
-extern int xbelite2_on_gip_message(const u8 *data, int size);
 
 // Forward declarations
 static struct input_dev *xbelite2_setup_input(struct device *dev, u16 bustype, u16 product);
@@ -229,7 +220,6 @@ static int bt_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	if (device_create_file(&hdev->dev, &dev_attr_bt_hw_profile))
 		hid_warn(hdev, "failed to create hw_profile sysfs attr\n");
 
-	xbelite2_on_bt_connect();
 	hid_info(hdev, "Xbox Elite Series 2 connected (BT)\n");
 	return 0;
 }
@@ -244,7 +234,6 @@ static void bt_remove(struct hid_device *hdev)
 	}
 	g_bt.active = false;
 	g_bt.hdev = NULL;
-	xbelite2_on_bt_disconnect();
 	wake_up_interruptible(&g_bt.wait);
 	hid_hw_close(hdev);
 	misc_deregister(&g_bt.miscdev);
@@ -316,7 +305,7 @@ static int bt_raw_event(struct hid_device *hdev, struct hid_report *report,
 	}
 	
 	bt_ring_push(data, size);
-	return xbelite2_on_bt_report(data, size);
+	return 0;
 }
 
 static void bt_power_off(void)
@@ -609,8 +598,22 @@ static void usb_irq(struct urb *urb)
 			d->init_sent = true;
 			schedule_work(&d->init_work);
 		}
-		if (xbelite2_on_gip_message(data, len))
+		// Forward gamepad input, elite extended reports, and vendor messages
+		// to userspace via the ring buffer.
+		switch (data[0]) {
+		case 0x20: // INPUT
+		case 0x07: // GUIDE
+		case 0x0C: // ELITE
+		case 0x4D: // VENDOR
+		case 0x1E: // SYSTEM
+		case 0x01: // ACK
+		case 0x02: // HELLO
+		case 0x03: // STATUS
 			ring_push(d, data, len);
+			break;
+		default:
+			break;
+		}
 
 		// Input event reporting
 		if (input) {
@@ -681,9 +684,10 @@ static void usb_irq(struct urb *urb)
 				input_report_abs(input, ABS_HAT0Y,
 					(b2 & (1 << 1)) ? 1 : ((b2 & (1 << 0)) ? -1 : 0)); // Down:Up
 
-				// Triggers (u16 LE, 0-1023)
-				lt = (u16)data[6] | ((u16)data[7] << 8);
-				rt = (u16)data[8] | ((u16)data[9] << 8);
+				// Triggers (u16 LE, 10-bit range 0-1023; mask off
+				// high bits the controller may set).
+				lt = ((u16)data[6] | ((u16)data[7] << 8)) & 0x03FF;
+				rt = ((u16)data[8] | ((u16)data[9] << 8)) & 0x03FF;
 				input_report_abs(input, ABS_Z, lt);
 				input_report_abs(input, ABS_RZ, rt);
 
@@ -803,7 +807,6 @@ static int usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	if (device_create_file(&intf->dev, &dev_attr_hw_profile))
 		dev_warn(&intf->dev, "failed to create hw_profile sysfs attr\n");
 
-	xbelite2_on_usb_connect();
 	dev_info(&intf->dev, "Xbox Elite Series 2 connected (USB)\n");
 	return 0;
 
@@ -837,7 +840,6 @@ static void usb_disconnect(struct usb_interface *intf)
 	
 	d->running = false;
 	g_usb = NULL;
-	xbelite2_on_usb_disconnect();
 	wake_up_interruptible(&d->ring_wait);
 	usb_kill_urb(d->irq_in);
 	usb_kill_urb(d->irq_out);

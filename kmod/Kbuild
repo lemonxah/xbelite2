@@ -1,2 +1,1 @@
 obj-m := xbelite2.o
-xbelite2-y := xbelite2_c.o xbelite2_logic.o
