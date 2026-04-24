@@ -1,6 +1,6 @@
 [package]
 name = "xbelite2-gip"
-version = "0.9.5"
+version = "0.9.6"
 edition = "2021"
 description = "GIP protocol library for Xbox Elite Series 2 controllers"
 license = "GPL-2.0-only"

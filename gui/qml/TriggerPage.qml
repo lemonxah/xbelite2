@@ -33,25 +33,17 @@ Item {
 
                     Label { text: "Left Trigger"; color: "#e0e0e0"; font.pixelSize: 13; font.bold: true; Layout.alignment: Qt.AlignHCenter }
 
-                    // Vertical bar
                     Rectangle {
                         Layout.fillWidth: true; Layout.fillHeight: true
                         color: "#0a0a0a"; radius: 4; border.color: "#333"
                         clip: true
 
-                        // Dead zone min marker
+                        // Saturation threshold line — output clips to max above this
                         Rectangle {
                             anchors.left: parent.left; anchors.right: parent.right
-                            y: parent.height - (parent.height * profileModel.left_trigger_min / 1023)
-                            height: 1; color: "#e74c3c"; opacity: 0.5
+                            y: parent.height - (parent.height * profileModel.left_trigger_sat / 255)
+                            height: 1; color: "#e74c3c"; opacity: 0.6
                         }
-                        // Dead zone max marker
-                        Rectangle {
-                            anchors.left: parent.left; anchors.right: parent.right
-                            y: parent.height - (parent.height * profileModel.left_trigger_max / 1023)
-                            height: 1; color: "#e74c3c"; opacity: 0.5
-                        }
-                        // Fill
                         Rectangle {
                             anchors.left: parent.left; anchors.right: parent.right
                             anchors.bottom: parent.bottom
@@ -86,13 +78,8 @@ Item {
 
                         Rectangle {
                             anchors.left: parent.left; anchors.right: parent.right
-                            y: parent.height - (parent.height * profileModel.right_trigger_min / 1023)
-                            height: 1; color: "#e74c3c"; opacity: 0.5
-                        }
-                        Rectangle {
-                            anchors.left: parent.left; anchors.right: parent.right
-                            y: parent.height - (parent.height * profileModel.right_trigger_max / 1023)
-                            height: 1; color: "#e74c3c"; opacity: 0.5
+                            y: parent.height - (parent.height * profileModel.right_trigger_sat / 255)
+                            height: 1; color: "#e74c3c"; opacity: 0.6
                         }
                         Rectangle {
                             anchors.left: parent.left; anchors.right: parent.right
@@ -111,15 +98,21 @@ Item {
             }
         }
 
-        // Right: dead zone sliders
+        // Right: trigger saturation sliders
         ColumnLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
             spacing: 20
 
             Label {
-                text: "Trigger Dead Zones"
+                text: "Trigger Saturation (Max)"
                 font.pixelSize: 16; font.bold: true; color: "#e0e0e0"
+            }
+            Label {
+                text: "Physical travel at which the output reaches its maximum. 255 = full analog, lower = hair-trigger, 0 = binary (on/off)."
+                color: "#888"; font.pixelSize: 11
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
             }
 
             GroupBox {
@@ -131,13 +124,14 @@ Item {
                 GridLayout {
                     columns: 3; columnSpacing: 10; rowSpacing: 10
 
-                    Label { text: "Min"; color: "#888" }
-                    Slider { id: ltMin; from: 0; to: 512; stepSize: 1; value: profileModel.left_trigger_min; Layout.fillWidth: true; onMoved: profileModel.set_trigger_zone(0, value, ltMax.value) }
-                    Label { text: Math.round(ltMin.value).toString(); color: "#888"; Layout.preferredWidth: 35 }
-
                     Label { text: "Max"; color: "#888" }
-                    Slider { id: ltMax; from: 512; to: 1023; stepSize: 1; value: profileModel.left_trigger_max; Layout.fillWidth: true; onMoved: profileModel.set_trigger_zone(0, ltMin.value, value) }
-                    Label { text: Math.round(ltMax.value).toString(); color: "#888"; Layout.preferredWidth: 35 }
+                    Slider {
+                        id: ltSat; from: 0; to: 255; stepSize: 1
+                        value: profileModel.left_trigger_sat
+                        Layout.fillWidth: true
+                        onMoved: profileModel.set_trigger_saturation(0, value)
+                    }
+                    Label { text: Math.round(ltSat.value).toString(); color: "#888"; Layout.preferredWidth: 35 }
                 }
             }
 
@@ -150,13 +144,14 @@ Item {
                 GridLayout {
                     columns: 3; columnSpacing: 10; rowSpacing: 10
 
-                    Label { text: "Min"; color: "#888" }
-                    Slider { id: rtMin; from: 0; to: 512; stepSize: 1; value: profileModel.right_trigger_min; Layout.fillWidth: true; onMoved: profileModel.set_trigger_zone(1, value, rtMax.value) }
-                    Label { text: Math.round(rtMin.value).toString(); color: "#888"; Layout.preferredWidth: 35 }
-
                     Label { text: "Max"; color: "#888" }
-                    Slider { id: rtMax; from: 512; to: 1023; stepSize: 1; value: profileModel.right_trigger_max; Layout.fillWidth: true; onMoved: profileModel.set_trigger_zone(1, rtMin.value, value) }
-                    Label { text: Math.round(rtMax.value).toString(); color: "#888"; Layout.preferredWidth: 35 }
+                    Slider {
+                        id: rtSat; from: 0; to: 255; stepSize: 1
+                        value: profileModel.right_trigger_sat
+                        Layout.fillWidth: true
+                        onMoved: profileModel.set_trigger_saturation(1, value)
+                    }
+                    Label { text: Math.round(rtSat.value).toString(); color: "#888"; Layout.preferredWidth: 35 }
                 }
             }
 

@@ -11,11 +11,17 @@ Item {
         spacing: 15
 
         Label {
-            text: "Vibration"
+            text: "Rumble Intensity"
             font.pixelSize: 20; font.bold: true; color: "#e0e0e0"
         }
+        Label {
+            text: "Per-motor scale for rumble events received while this profile is active. 0 silences the motor."
+            color: "#888"; font.pixelSize: 11
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
+        }
 
-        VibRow { label: "Main Motor (Strong)"; val: profileModel.vibration_main
+        VibRow { label: "Strong Motor (Main)"; val: profileModel.vibration_main
             onSliderMoved: profileModel.set_vibration(0, val)
             onTest: profileModel.test_vibration(0, profileModel.vibration_main) }
 
@@ -23,11 +29,11 @@ Item {
             onSliderMoved: profileModel.set_vibration(1, val)
             onTest: profileModel.test_vibration(1, profileModel.vibration_weak) }
 
-        VibRow { label: "Left Trigger"; val: profileModel.vibration_lt
+        VibRow { label: "Left Trigger Impulse"; val: profileModel.vibration_lt
             onSliderMoved: profileModel.set_vibration(2, val)
             onTest: profileModel.test_vibration(2, profileModel.vibration_lt) }
 
-        VibRow { label: "Right Trigger"; val: profileModel.vibration_rt
+        VibRow { label: "Right Trigger Impulse"; val: profileModel.vibration_rt
             onSliderMoved: profileModel.set_vibration(3, val)
             onTest: profileModel.test_vibration(3, profileModel.vibration_rt) }
 

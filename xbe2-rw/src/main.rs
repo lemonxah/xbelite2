@@ -79,22 +79,51 @@ fn run(mode: &str, args: &[String], dev: &mut GipDevice) {
             profile::reset_profile(dev, idx);
             println!("Profile {} fully reset to factory default", idx + 1);
         }
-        "deadzone" => {
+        "rumble-intensity" | "deadzone" => {
             let idx = parse_profile_idx(args, 2);
             if args.len() < 7 {
-                eprintln!("Usage: xbe2-rw deadzone <1-3> <lstick> <rstick> <ltrigger> <rtrigger>");
+                eprintln!("Usage: xbe2-rw rumble-intensity <1-3> <weak> <strong> <rt> <lt>");
+                eprintln!("  Values are 0-100 per motor. Default 100.");
+                eprintln!("  (This field was previously misnamed 'deadzone'.)");
                 std::process::exit(1);
             }
             let vals: Vec<u8> = args[3..7].iter().filter_map(|s| s.parse().ok()).collect();
             if vals.len() != 4 {
-                eprintln!("Need 4 numeric values");
+                eprintln!("Need 4 numeric values (weak, strong, rt, lt)");
                 std::process::exit(1);
             }
-            profile::set_deadzones(dev, idx, vals[0], vals[1], vals[2], vals[3]);
+            profile::set_rumble_intensity(dev, idx, [vals[0], vals[1], vals[2], vals[3]]);
             println!(
-                "Profile {} dead zones: LS={} RS={} LT={} RT={}",
+                "Profile {} rumble intensity: weak={} strong={} rt={} lt={}",
                 idx + 1, vals[0], vals[1], vals[2], vals[3]
             );
+        }
+        "saturation" => {
+            let idx = parse_profile_idx(args, 2);
+            if args.len() < 4 {
+                match profile::get_saturation(dev, idx) {
+                    Some(s) => println!(
+                        "Profile {} saturation: LT={} LS={} RT={} RS={}",
+                        idx + 1, s[0], s[1], s[2], s[3]
+                    ),
+                    None => eprintln!("Failed to read profile {}", idx + 1),
+                }
+            } else if args.len() >= 7 {
+                let vals: Vec<u8> = args[3..7].iter().filter_map(|s| s.parse().ok()).collect();
+                if vals.len() != 4 {
+                    eprintln!("Need 4 u8 values: LT LS RT RS (each 0-255, 255 = full range)");
+                    std::process::exit(1);
+                }
+                profile::set_saturation(dev, idx, [vals[0], vals[1], vals[2], vals[3]]);
+                println!(
+                    "Profile {} saturation: LT={} LS={} RT={} RS={}",
+                    idx + 1, vals[0], vals[1], vals[2], vals[3]
+                );
+            } else {
+                eprintln!("Usage: xbe2-rw saturation <1-3> [LT LS RT RS]");
+                eprintln!("       (no values = read current; each 0-255, 255 = full analog, 0 = binary)");
+                std::process::exit(1);
+            }
         }
         "vibration" => {
             let idx = parse_profile_idx(args, 2);
@@ -148,7 +177,7 @@ fn run(mode: &str, args: &[String], dev: &mut GipDevice) {
             let rm: u8 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
             let lt: u8 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
             let rt: u8 = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(0);
-            let ms: u64 = args.get(6).and_then(|s| s.parse().ok()).unwrap_or(50);
+            let ms: u64 = args.get(6).and_then(|s| s.parse().ok()).unwrap_or(250);
             rumble::set(dev, lm, rm, lt, rt);
             println!("Rumble: LM={lm} RM={rm} LT={lt} RT={rt} ({ms}ms)");
             std::thread::sleep(std::time::Duration::from_millis(ms));
@@ -175,14 +204,15 @@ fn print_usage() {
     println!("  xbe2-rw remap <1-3> <FROM=TO> ...             Remap buttons (normal mode)");
     println!("  xbe2-rw remap-shift <1-3> <FROM=TO> ...       Remap buttons (shift mode)");
     println!("  xbe2-rw remap-reset <1-3>                     Reset remaps to default");
-    println!("  xbe2-rw deadzone <1-3> <LS> <RS> <LT> <RT>   Set dead zones (0-255)");
+    println!("  xbe2-rw rumble-intensity <1-3> <weak> <strong> <rt> <lt>   Per-motor rumble scale (0-100)");
+    println!("  xbe2-rw saturation <1-3> [LT LS RT RS]       Read/set per-axis saturation (0-255, 255=full analog, 0=binary)");
     println!("  xbe2-rw vibration <1-3> <left> <right>        Set vibration (0-100)");
     println!("  xbe2-rw curves <1-3> reset                    Reset stick curves to linear");
     println!("  xbe2-rw invert <1-3> [mask]                   Get/set stick inversion mask");
     println!("                                                 bit0=LY bit1=RY bit2=LX bit3=RX");
     println!("  xbe2-rw led <RRGGBB>                          Live LED preview (not saved)");
     println!("  xbe2-rw led-off                               Return LED to profile color");
-    println!("  xbe2-rw rumble <LM> <RM> [LT] [RT] [MS]       Test rumble motors (0-100, default 50ms)");
+    println!("  xbe2-rw rumble <LM> <RM> [LT] [RT] [MS]       Test rumble motors (0-100, default 250ms)");
     println!("  xbe2-rw rumble-stop                           Stop rumble");
     println!();
     println!("Buttons: A B X Y LB RB LT RT DUp DDown DLeft DRight");
@@ -277,7 +307,9 @@ fn print_profile_summary(num: usize, m: &ProfileMapping) {
     print!("Profile {num}:");
     print!(" [{}]", if m.is_custom() { "custom" } else { "default" });
     print!(" face=[{},{},{},{}]", btn(m.face[0]), btn(m.face[1]), btn(m.face[2]), btn(m.face[3]));
-    print!(" dz=[{},{},{},{}]", m.deadzones[0], m.deadzones[1], m.deadzones[2], m.deadzones[3]);
+    print!(" rumble=[w{},s{},rt{},lt{}]",
+        m.rumble_intensity[0], m.rumble_intensity[1],
+        m.rumble_intensity[2], m.rumble_intensity[3]);
     match m.color {
         Some((r, g, b)) => print!(" color=#{r:02x}{g:02x}{b:02x}"),
         None => print!(" color=default"),
@@ -295,12 +327,22 @@ fn print_mapping(m: &ProfileMapping, page: u8) {
         btn(m.ext[0]), btn(m.ext[1]), btn(m.ext[2]), btn(m.ext[3]),
         btn(m.ext[4]), btn(m.ext[5]), btn(m.ext[6]), btn(m.ext[7])
     );
-    println!("    deadzones: LS={} RS={} LT={} RT={}", m.deadzones[0], m.deadzones[1], m.deadzones[2], m.deadzones[3]);
+    println!("    rumble intensity: weak={} strong={} RT={} LT={} (0-100)",
+        m.rumble_intensity[0], m.rumble_intensity[1],
+        m.rumble_intensity[2], m.rumble_intensity[3]);
+    println!("    saturation: LT={} LS={} RT={} RS={} (255=full analog, 0=binary)",
+        m.saturation[0], m.saturation[1], m.saturation[2], m.saturation[3]);
     match m.color {
         Some((r, g, b)) => println!("    color: #{r:02x}{g:02x}{b:02x}"),
         None => println!("    color: default"),
     }
     println!("    vibration: left={} right={}", m.vibration.0, m.vibration.1);
+    print!("    raw (56 bytes):");
+    for (i, b) in m.raw.iter().take(56).enumerate() {
+        if i % 16 == 0 { print!("\n      [{i:2}]"); }
+        print!(" {b:02x}");
+    }
+    println!();
 }
 
 fn print_curves(c: &ProfileCurves, page: u8) {

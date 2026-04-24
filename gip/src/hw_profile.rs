@@ -29,8 +29,18 @@ pub struct HwProfile {
     pub shift_ext: [u8; 8],
     /// Reserved region (bytes 17-27)
     pub reserved: [u8; 11],
-    /// Dead zones: [LStick, RStick, LTrigger, RTrigger]
-    pub deadzones: [u8; 4],
+    /// Per-motor rumble intensity at mapping bytes 28-31: [weak, strong, RT, LT]
+    /// (0-100). Setting any to 0 silences that motor while the profile is active.
+    #[serde(alias = "deadzones", default = "default_rumble_intensity")]
+    pub rumble_intensity: [u8; 4],
+    /// Per-axis max-output saturation at mapping bytes [32, 34, 38, 40]:
+    /// [LT, LS, RT, RS]. 0xFF = full analog range; lower = output saturates
+    /// earlier on the physical travel; 0 = binary output. The Elite 2 firmware
+    /// uses these to drive hair-trigger behavior. Serde default is all-0xFF
+    /// so cached profiles written before this field existed still deserialize
+    /// (and load as "full analog" rather than "binary").
+    #[serde(default = "default_saturation")]
+    pub saturation: [u8; 4],
     /// Color (None = default white)
     pub color: Option<(u8, u8, u8)>,
     /// LED brightness (0-100, default 100)
@@ -42,6 +52,8 @@ pub struct HwProfile {
 }
 
 fn default_paddles() -> [u8; 4] { DEFAULT_FACE }
+fn default_saturation() -> [u8; 4] { [0xFF; 4] }
+fn default_rumble_intensity() -> [u8; 4] { [100; 4] }
 
 impl HwProfile {
     pub fn is_ext_remapped(&self, index: usize) -> bool {
@@ -72,7 +84,18 @@ impl HwProfile {
         data[OFF_FACE..OFF_FACE + 4].copy_from_slice(&self.face);
         data[OFF_REMAP_EXT..OFF_REMAP_EXT + 8].copy_from_slice(&self.ext);
         data[17..28].copy_from_slice(&self.reserved);
-        data[OFF_DEADZONES..OFF_DEADZONES + 4].copy_from_slice(&self.deadzones);
+        data[OFF_RUMBLE_INTENSITY..OFF_RUMBLE_INTENSITY + 4].copy_from_slice(&self.rumble_intensity);
+        // Axis saturation bytes — must be written, otherwise they default to 0
+        // and the controller interprets that as "binary output" on triggers.
+        // The high byte of each u16 LE field is always 0 in firmware captures.
+        data[OFF_SAT_LT] = self.saturation[0];
+        data[OFF_SAT_LT + 1] = 0;
+        data[OFF_SAT_LS] = self.saturation[1];
+        data[OFF_SAT_LS + 1] = 0;
+        data[OFF_SAT_RT] = self.saturation[2];
+        data[OFF_SAT_RT + 1] = 0;
+        data[OFF_SAT_RS] = self.saturation[3];
+        data[OFF_SAT_RS + 1] = 0;
         data[OFF_BRIGHTNESS] = self.brightness;
         if let Some((r, g, b)) = self.color {
             data[OFF_COLOR_FLAG] = 0x00;
@@ -160,7 +183,8 @@ pub fn read_from_controller(dev: &mut GipDevice) -> HwProfileCache {
                 shift_face: shift_f,
                 shift_ext: shift_e,
                 reserved: paddle_region,
-                deadzones: mapping.deadzones,
+                rumble_intensity: mapping.rumble_intensity,
+                saturation: mapping.saturation,
                 color: mapping.color,
                 brightness: mapping.brightness,
                 stick_inversion,

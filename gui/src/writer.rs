@@ -19,6 +19,14 @@ pub enum WriteOp {
     /// Remap a paddle (paddle_idx 0..=3) in SlotA (normal) or SlotB (shift).
     SetPaddle { profile_idx: usize, slot: usize, paddle_idx: usize, to: GipButton },
     SetStickInversion { profile_idx: usize, mask: u8 },
+    /// Per-axis output saturation [LT, LS, RT, RS] at mapping bytes 32/34/38/40.
+    /// 255 = full analog, 0 = binary. Sticks typically stay at 255 unless the
+    /// user explicitly reduces range.
+    SetSaturation { profile_idx: usize, values: [u8; 4] },
+    /// Per-motor rumble intensity [weak, strong, RT, LT] written to mapping
+    /// bytes 28-31. Any value at 0 silences that motor for rumble events
+    /// received while the profile is active.
+    SetRumbleIntensity { profile_idx: usize, values: [u8; 4] },
     SetDeviceName { name: String },
     /// Start rumble; worker schedules an auto-stop after `duration_ms`.
     Rumble { lm: u8, rm: u8, lt: u8, rt: u8, duration_ms: u64 },
@@ -82,6 +90,12 @@ fn exec(dev: &mut GipDevice, op: WriteOp, tx: &Sender<WriteOp>) {
         }
         WriteOp::SetStickInversion { profile_idx, mask } => {
             profile::set_stick_inversion(dev, profile_idx, mask);
+        }
+        WriteOp::SetSaturation { profile_idx, values } => {
+            profile::set_saturation(dev, profile_idx, values);
+        }
+        WriteOp::SetRumbleIntensity { profile_idx, values } => {
+            profile::set_rumble_intensity(dev, profile_idx, values);
         }
         WriteOp::SetDeviceName { name } => {
             let _ = name::write(dev, &name);

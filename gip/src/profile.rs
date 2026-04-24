@@ -239,15 +239,46 @@ pub fn reset_color(dev: &mut GipDevice, profile: usize) {
     commit(dev);
 }
 
-/// Set dead zones for a profile. Updates both slots.
-pub fn set_deadzones(dev: &mut GipDevice, profile: usize, lstick: u8, rstick: u8, ltrig: u8, rtrig: u8) {
+/// Set per-motor rumble intensity for a profile. `values` is
+/// [weak, strong, RT, LT] (0-100, 0x64 = default), stored at mapping bytes
+/// 28-31. Any value set to 0 silences that motor for rumble events. Updates
+/// both slots (A and B).
+pub fn set_rumble_intensity(dev: &mut GipDevice, profile: usize, values: [u8; 4]) {
     for slot in 0..2 {
         let page = PROFILE_MAPPING_PAGES[profile][slot];
         if let Some(mut data) = read_page(dev, page, MAPPING_SIZE) {
-            data[OFF_DEADZONES] = lstick;
-            data[OFF_DEADZONES + 1] = rstick;
-            data[OFF_DEADZONES + 2] = ltrig;
-            data[OFF_DEADZONES + 3] = rtrig;
+            data[OFF_RUMBLE_INTENSITY]     = values[0]; // weak
+            data[OFF_RUMBLE_INTENSITY + 1] = values[1]; // strong
+            data[OFF_RUMBLE_INTENSITY + 2] = values[2]; // RT
+            data[OFF_RUMBLE_INTENSITY + 3] = values[3]; // LT
+            write_page(dev, page, &data);
+        }
+    }
+    commit(dev);
+}
+
+/// Read per-axis saturation from the profile mapping page (slot A). Returns
+/// [LT, LS, RT, RS] from mapping bytes [32, 34, 38, 40]. 0xFF = full range,
+/// lower = output saturates earlier on physical travel, 0 = binary output.
+pub fn get_saturation(dev: &mut GipDevice, profile: usize) -> Option<[u8; 4]> {
+    let page = PROFILE_MAPPING_PAGES[profile][0];
+    let data = read_page(dev, page, MAPPING_SIZE)?;
+    if data.len() <= OFF_SAT_RS { return None; }
+    Some([data[OFF_SAT_LT], data[OFF_SAT_LS], data[OFF_SAT_RT], data[OFF_SAT_RS]])
+}
+
+/// Write per-axis saturation to the profile mapping page. `values` is
+/// [LT, LS, RT, RS] at bytes [32, 34, 38, 40]. Each byte is the low half of a
+/// u16 LE field; we always write the high half as 0 to match firmware captures.
+/// Updates both slots (A and B).
+pub fn set_saturation(dev: &mut GipDevice, profile: usize, values: [u8; 4]) {
+    for slot in 0..2 {
+        let page = PROFILE_MAPPING_PAGES[profile][slot];
+        if let Some(mut data) = read_page(dev, page, MAPPING_SIZE) {
+            data[OFF_SAT_LT] = values[0]; data[OFF_SAT_LT + 1] = 0;
+            data[OFF_SAT_LS] = values[1]; data[OFF_SAT_LS + 1] = 0;
+            data[OFF_SAT_RT] = values[2]; data[OFF_SAT_RT + 1] = 0;
+            data[OFF_SAT_RS] = values[3]; data[OFF_SAT_RS + 1] = 0;
             write_page(dev, page, &data);
         }
     }
@@ -288,10 +319,11 @@ pub fn reset_profile(dev: &mut GipDevice, profile: usize) {
     mapping[OFF_PADDLES..OFF_PADDLES + 4].copy_from_slice(&DEFAULT_FACE);
     mapping[OFF_FACE..OFF_FACE + 4].copy_from_slice(&DEFAULT_FACE);
     mapping[OFF_REMAP_EXT..OFF_REMAP_EXT + 8].copy_from_slice(&DEFAULT_EXT);
-    mapping[OFF_DEADZONES] = 100;
-    mapping[OFF_DEADZONES + 1] = 100;
-    mapping[OFF_DEADZONES + 2] = 100;
-    mapping[OFF_DEADZONES + 3] = 100;
+    // Rumble intensity: [weak, strong, RT, LT], factory default 100% each.
+    mapping[OFF_RUMBLE_INTENSITY]     = 100;
+    mapping[OFF_RUMBLE_INTENSITY + 1] = 100;
+    mapping[OFF_RUMBLE_INTENSITY + 2] = 100;
+    mapping[OFF_RUMBLE_INTENSITY + 3] = 100;
     let default_ranges: [u8; 12] = [0xFF, 0x00, 0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00, 0x00];
     mapping[32..44].copy_from_slice(&default_ranges);
     mapping[OFF_BRIGHTNESS] = 100;

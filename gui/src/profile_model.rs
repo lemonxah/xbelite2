@@ -16,10 +16,10 @@ pub mod qobject {
         #[qproperty(bool, connected)]
         #[qproperty(i32, profile_count)]
         #[qproperty(QString, profile_name)]
-        #[qproperty(i32, left_trigger_min)]
-        #[qproperty(i32, left_trigger_max)]
-        #[qproperty(i32, right_trigger_min)]
-        #[qproperty(i32, right_trigger_max)]
+        // Per-trigger saturation (0-255). 255 = full analog travel,
+        // lower = hair-trigger (saturates earlier), 0 = binary output.
+        #[qproperty(i32, left_trigger_sat)]
+        #[qproperty(i32, right_trigger_sat)]
         #[qproperty(i32, vibration_main)]
         #[qproperty(i32, vibration_weak)]
         #[qproperty(i32, vibration_lt)]
@@ -70,7 +70,7 @@ pub mod qobject {
         fn set_stick_curve(self: Pin<&mut ProfileModel>, axis: i32, points_json: QString);
 
         #[qinvokable]
-        fn set_trigger_zone(self: Pin<&mut ProfileModel>, trigger: i32, min_val: i32, max_val: i32);
+        fn set_trigger_saturation(self: Pin<&mut ProfileModel>, trigger: i32, value: i32);
 
         #[qinvokable]
         fn set_vibration(self: Pin<&mut ProfileModel>, motor: i32, intensity: i32);
@@ -168,7 +168,9 @@ struct Profile {
     name: String,
     remaps: Vec<Remap>,
     stick_curves: [Option<Curve>; 4],
-    trigger_zones: [Option<TZone>; 2],
+    /// Per-trigger saturation 0-255 (mapping byte 32/38). 255 = full analog.
+    #[serde(default = "default_trigger_sat")]
+    trigger_saturation: [u8; 2],
     #[serde(default)]
     stick_deadzones: [u16; 2],
     vibration: Vib,
@@ -192,11 +194,7 @@ struct Curve {
     points: [i16; 16],
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct TZone {
-    dead_min: u16,
-    dead_max: u16,
-}
+fn default_trigger_sat() -> [u8; 2] { [0xFF, 0xFF] }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Vib {
@@ -219,10 +217,8 @@ pub struct ProfileModelRust {
     connected: bool,
     profile_count: i32,
     profile_name: QString,
-    left_trigger_min: i32,
-    left_trigger_max: i32,
-    right_trigger_min: i32,
-    right_trigger_max: i32,
+    left_trigger_sat: i32,
+    right_trigger_sat: i32,
     vibration_main: i32,
     vibration_weak: i32,
     vibration_lt: i32,
@@ -271,10 +267,8 @@ impl Default for ProfileModelRust {
             connected: false,
             profile_count: 3,
             profile_name: QString::default(),
-            left_trigger_min: 0,
-            left_trigger_max: 1023,
-            right_trigger_min: 0,
-            right_trigger_max: 1023,
+            left_trigger_sat: 255,
+            right_trigger_sat: 255,
             vibration_main: 100,
             vibration_weak: 100,
             vibration_lt: 100,
@@ -335,6 +329,7 @@ impl qobject::ProfileModel {
             // USB: refresh from controller + persist. BT: load last USB snapshot.
             self.as_mut().refresh_hw_cache();
             self.as_mut().update_profile_color_from_cache();
+            self.as_mut().update_trigger_sat_from_cache();
         } else {
             self.as_mut().set_connected(false);
             self.as_mut().set_device_name(QString::from(&info.name));
@@ -412,21 +407,31 @@ impl qobject::ProfileModel {
         }
     }
 
-    fn set_trigger_zone(mut self: Pin<&mut Self>, trigger: i32, min_val: i32, max_val: i32) {
-        let idx = self.rust().sel_idx;
+    fn set_trigger_saturation(mut self: Pin<&mut Self>, trigger: i32, value: i32) {
         let t = trigger as usize;
-        if t < 2 {
-            if let Some(p) = self.as_mut().rust_mut().config.profiles.get_mut(idx) {
-                p.trigger_zones[t] = Some(TZone { dead_min: min_val as u16, dead_max: max_val as u16 });
-            }
-            if t == 0 {
-                self.as_mut().set_left_trigger_min(min_val);
-                self.as_mut().set_left_trigger_max(max_val);
-            } else {
-                self.as_mut().set_right_trigger_min(min_val);
-                self.as_mut().set_right_trigger_max(max_val);
-            }
+        if t >= 2 { return; }
+        let v = value.clamp(0, 255) as u8;
+        let hw = self.rust().hw_profile;
+        if hw < 1 || hw > 3 { return; }  // profile 0 has no writable mapping page
+        let hw_idx = (hw - 1) as usize;
+
+        // Update the UI-facing slider first so the UX feels responsive.
+        if t == 0 {
+            self.as_mut().set_left_trigger_sat(v as i32);
+        } else {
+            self.as_mut().set_right_trigger_sat(v as i32);
         }
+
+        // Compose the full [LT, LS, RT, RS] payload from hw_cache so we don't
+        // clobber stick saturation, then push to hardware and mirror the cache.
+        let mut values = [0xFFu8; 4];
+        if self.rust().hw_cache_loaded {
+            values = self.rust().hw_cache.profiles[hw_idx].saturation;
+        }
+        values[if t == 0 { 0 } else { 2 }] = v;
+        self.as_mut().rust_mut().hw_cache.profiles[hw_idx].saturation = values;
+        self.as_mut().save_hw_cache();
+        self.rust().writer.send(WriteOp::SetSaturation { profile_idx: hw_idx, values });
     }
 
     fn set_vibration(mut self: Pin<&mut Self>, motor: i32, intensity: i32) {
@@ -441,6 +446,30 @@ impl qobject::ProfileModel {
                 _ => {}
             }
         }
+
+        // Mirror the change into the active hardware profile's rumble-intensity
+        // bytes (28-31). Controller field order is [weak, strong, RT, LT] — the
+        // GUI uses (0=main/strong, 1=weak, 2=LT, 3=RT), so we translate the
+        // index. Only writes when a custom hw_profile (1-3) is active, since
+        // profile 0 has no writable mapping page.
+        let hw = self.rust().hw_profile;
+        if hw < 1 || hw > 3 { return; }
+        let hw_idx = (hw - 1) as usize;
+        let mut values = if self.rust().hw_cache_loaded {
+            self.rust().hw_cache.profiles[hw_idx].rumble_intensity
+        } else {
+            [100u8; 4]
+        };
+        match motor {
+            0 => values[1] = v, // main motor → strong
+            1 => values[0] = v, // weak motor → weak
+            2 => values[3] = v, // LT slider → LT motor
+            3 => values[2] = v, // RT slider → RT motor
+            _ => return,
+        }
+        self.as_mut().rust_mut().hw_cache.profiles[hw_idx].rumble_intensity = values;
+        self.as_mut().save_hw_cache();
+        self.rust().writer.send(WriteOp::SetRumbleIntensity { profile_idx: hw_idx, values });
     }
 
     fn save_profile(self: Pin<&mut Self>) {
@@ -756,12 +785,8 @@ impl qobject::ProfileModel {
         self.as_mut().set_right_stick_x_curve(QString::from(&jsons[2]));
         self.as_mut().set_right_stick_y_curve(QString::from(&jsons[3]));
 
-        let (ltmn, ltmx) = p.trigger_zones[0].as_ref().map(|z| (z.dead_min as i32, z.dead_max as i32)).unwrap_or((0, 1023));
-        let (rtmn, rtmx) = p.trigger_zones[1].as_ref().map(|z| (z.dead_min as i32, z.dead_max as i32)).unwrap_or((0, 1023));
-        self.as_mut().set_left_trigger_min(ltmn);
-        self.as_mut().set_left_trigger_max(ltmx);
-        self.as_mut().set_right_trigger_min(rtmn);
-        self.as_mut().set_right_trigger_max(rtmx);
+        self.as_mut().set_left_trigger_sat(p.trigger_saturation[0] as i32);
+        self.as_mut().set_right_trigger_sat(p.trigger_saturation[1] as i32);
 
         self.as_mut().set_vibration_main(p.vibration.main_motor as i32);
         self.as_mut().set_vibration_weak(p.vibration.weak_motor as i32);
@@ -780,7 +805,7 @@ impl qobject::ProfileModel {
             3 => (0, 0, 0, i),
             _ => return,
         };
-        self.rust().writer.send(WriteOp::Rumble { lm, rm, lt, rt, duration_ms: 50 });
+        self.rust().writer.send(WriteOp::Rumble { lm, rm, lt, rt, duration_ms: 250 });
     }
 
     fn test_all_vibration(self: Pin<&mut Self>) {
@@ -788,7 +813,7 @@ impl qobject::ProfileModel {
         let rm = self.rust().vibration_weak.clamp(0, 100) as u8;
         let lt = self.rust().vibration_lt.clamp(0, 100) as u8;
         let rt = self.rust().vibration_rt.clamp(0, 100) as u8;
-        self.rust().writer.send(WriteOp::Rumble { lm, rm, lt, rt, duration_ms: 50 });
+        self.rust().writer.send(WriteOp::Rumble { lm, rm, lt, rt, duration_ms: 250 });
     }
 
     fn refresh_status(mut self: Pin<&mut Self>) {
@@ -802,6 +827,7 @@ impl qobject::ProfileModel {
                     if hw_i != self.rust().hw_profile {
                         self.as_mut().set_hw_profile(hw_i);
                         self.as_mut().update_profile_color_from_cache();
+            self.as_mut().update_trigger_sat_from_cache();
                     }
                     let input = self.as_mut().rust_mut().evdev.poll();
                     self.as_mut().set_live_buttons(input.buttons as i32);
@@ -850,9 +876,43 @@ impl qobject::ProfileModel {
                 self.as_mut().refresh_hw_cache();
             }
             self.as_mut().update_profile_color_from_cache();
+            self.as_mut().update_trigger_sat_from_cache();
         } else {
             // Device went away — invalidate the cache so a fresh read happens on reconnect.
             self.as_mut().rust_mut().hw_cache_loaded = false;
+        }
+    }
+
+    /// Update the QML-facing trigger-saturation properties from the in-memory
+    /// cache so sliders reflect what's actually on the controller for the
+    /// currently active hardware profile.
+    fn update_trigger_sat_from_cache(mut self: Pin<&mut Self>) {
+        let hw = self.rust().hw_profile;
+        if hw < 1 || hw > 3 || !self.rust().hw_cache_loaded { return; }
+        let idx = (hw - 1) as usize;
+        let sat = self.rust().hw_cache.profiles[idx].saturation;
+        // saturation layout: [LT, LS, RT, RS]
+        if self.rust().left_trigger_sat != sat[0] as i32 {
+            self.as_mut().set_left_trigger_sat(sat[0] as i32);
+        }
+        if self.rust().right_trigger_sat != sat[2] as i32 {
+            self.as_mut().set_right_trigger_sat(sat[2] as i32);
+        }
+
+        // Also sync the vibration sliders from the active profile's rumble
+        // intensity bytes. Controller layout is [weak, strong, RT, LT].
+        let rumble = self.rust().hw_cache.profiles[idx].rumble_intensity;
+        if self.rust().vibration_main != rumble[1] as i32 {
+            self.as_mut().set_vibration_main(rumble[1] as i32);
+        }
+        if self.rust().vibration_weak != rumble[0] as i32 {
+            self.as_mut().set_vibration_weak(rumble[0] as i32);
+        }
+        if self.rust().vibration_lt != rumble[3] as i32 {
+            self.as_mut().set_vibration_lt(rumble[3] as i32);
+        }
+        if self.rust().vibration_rt != rumble[2] as i32 {
+            self.as_mut().set_vibration_rt(rumble[2] as i32);
         }
     }
 

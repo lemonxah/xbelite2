@@ -236,15 +236,35 @@ SlotA = normal mode. SlotB = shift/alternate mapping (activated by holding a shi
 [17-27] keyboard/special remap data:
           [17]    keyboard remap source button GIP code (0 if none)
           [18-27] additional remap metadata (zeros when unused)
-[28-31] dead zones: [LStick, RStick, LTrigger, RTrigger] (0-255)
-[32-44] trigger/stick ranges:
-          [32-33] LT max range (u16 LE, 0xFF=100%, 0xAB=67%)
-          [34-35] LT min range (u16 LE)
-          [36-37] padding
-          [38-39] RT max range (u16 LE)
-          [40-41] RT min range (u16 LE)
-          [42-43] padding
-          [44]    LED brightness (0-100, default 0x64=100)
+[28-31] per-motor rumble intensity scale (0-100, 0x64=100 default):
+          [28] weak motor (small rotor)
+          [29] strong motor (large rotor)
+          [30] RT impulse motor
+          [31] LT impulse motor
+        Setting any byte to 0 silences that motor for rumble events received
+        while the profile is active. Name "deadzones" in older xbe2 tooling
+        was incorrect — this field is rumble scaling, not axis dead zone.
+[32-43] per-axis max-output saturation. Each field is u16 LE; only the low
+        byte is meaningful, high byte always 0x00. Value semantics (empirically
+        confirmed on Elite 2 FW 5.x):
+          0xFF = full analog range (default)
+          lower = output saturates earlier on the physical travel (hair trigger / shortened range)
+          0x00 = binary output (jumps straight to max on any press)
+        Layout:
+          [32-33] LT saturation
+          [34-35] LS saturation (left stick range)
+          [36-37] padding (always 0x0000)
+          [38-39] RT saturation
+          [40-41] RS saturation (right stick range)
+          [42-43] padding (always 0x0000)
+        NOTE: if these four bytes (32, 34, 38, 40) are written as 0x00 —
+        which happens if a writer zero-pads the mapping page instead of
+        preserving the original values — the firmware produces binary triggers
+        on any active profile. The Xbox Accessories app's "trigger range X%"
+        setting writes the same percentage into all four bytes (e.g. 67% =
+        0xAB). The driver/GUI must always write 0xFF here unless the user
+        explicitly wants a shortened range.
+[44]    LED brightness (0-100, default 0x64=100)
 [45]    color flag: 0xFF = default (white), 0x00 = custom
 [46]    color R
 [47]    color G

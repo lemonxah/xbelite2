@@ -101,7 +101,22 @@ pub fn ext_slot_for_button(code: u8) -> Option<usize> {
         None
     }
 }
-pub const OFF_DEADZONES: usize = 28;
+/// Per-motor rumble intensity scale (0-100, 0x64 default). Empirically
+/// confirmed: bytes 28-31 are [weak, strong, RT impulse, LT impulse] motor
+/// intensities. Setting any to 0 silences that motor for rumble events
+/// received while the profile is active. The Xbox Accessories app historically
+/// called these "dead zones" in its wire format but they are NOT axis dead
+/// zones — this tool previously carried the wrong name.
+pub const OFF_RUMBLE_INTENSITY: usize = 28;
+/// Per-axis max-output saturation bytes. Each is the low byte of a u16 LE
+/// field (high byte always 0 in firmware captures). 0xFF = full analog range,
+/// lower = output saturates earlier, 0 = binary output. Empirically confirmed
+/// on Elite 2: bytes 32 and 38 govern LT and RT; bytes 34 and 40 govern LS
+/// and RS stick range (confirmed they do NOT affect rumble).
+pub const OFF_SAT_LT: usize = 32;
+pub const OFF_SAT_LS: usize = 34;
+pub const OFF_SAT_RT: usize = 38;
+pub const OFF_SAT_RS: usize = 40;
 pub const OFF_COLOR_FLAG: usize = 45;
 pub const OFF_COLOR_R: usize = 46;
 pub const OFF_COLOR_G: usize = 47;
@@ -142,7 +157,11 @@ pub struct ProfileMapping {
     pub paddles: [u8; 4],    // bytes 1-4: [P1, P2, P3, P4] outputs
     pub face: [u8; 4],       // bytes 5-8: [A, B, X, Y] outputs
     pub ext: [u8; 8],        // bytes 9-16: [DUp, DDown, DLeft, DRight, LB, RB, LStick, RStick]
-    pub deadzones: [u8; 4],
+    /// Per-motor rumble intensity [weak, strong, RT, LT] at bytes 28-31.
+    pub rumble_intensity: [u8; 4],
+    /// Per-axis max-output saturation: [LT, LS, RT, RS] from bytes [32, 34, 38, 40].
+    /// 0xFF = full analog range, lower = saturates earlier, 0 = binary output.
+    pub saturation: [u8; 4],
     pub color: Option<(u8, u8, u8)>,
     pub brightness: u8,
     pub vibration: (u8, u8),
@@ -169,7 +188,8 @@ impl ProfileMapping {
                 data[9], data[10], data[11], data[12],
                 data[13], data[14], data[15], data[16],
             ],
-            deadzones: [data[28], data[29], data[30], data[31]],
+            rumble_intensity: [data[28], data[29], data[30], data[31]],
+            saturation: [data[OFF_SAT_LT], data[OFF_SAT_LS], data[OFF_SAT_RT], data[OFF_SAT_RS]],
             color,
             brightness: data[OFF_BRIGHTNESS],
             vibration: (data[OFF_VIBRATION], data[OFF_VIBRATION + 1]),

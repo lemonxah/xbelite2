@@ -32,6 +32,7 @@ All configuration is stored on the controller itself and persists across reboots
 - Button remapping (normal and shift/alternate mode per profile)
 - Profile LED colors (RGB)
 - Stick dead zones and response curves
+- Per-axis output saturation (trigger "hair trigger" / shortened-range behavior)
 - Vibration motor intensity
 - Device name (the Bluetooth advertised name)
 
@@ -113,9 +114,19 @@ sudo xbe2-rw remap 1 A=B B=A          # swap A and B
 sudo xbe2-rw remap-shift 1 A=LB       # A becomes LB in shift mode
 sudo xbe2-rw remap-reset 1             # reset to default
 
-# Dead zones and vibration
-sudo xbe2-rw deadzone 1 10 10 5 5
+# Per-motor rumble intensity (bytes 28-31 of the mapping page).
+# Arguments: weak, strong, RT impulse, LT impulse (0-100). Any 0 silences
+# that motor for rumble events while the profile is active.
+sudo xbe2-rw rumble-intensity 1 100 100 100 100
+
+# Vibration trim (bytes 49-50, semantics not fully nailed down)
 sudo xbe2-rw vibration 1 48 48
+
+# Per-axis saturation [LT LS RT RS] — the physical travel at which the
+# output reaches max. 255 = full analog (default), lower = hair-trigger,
+# 0 = binary (on/off only). If a profile ever ends up binary, this is why:
+sudo xbe2-rw saturation 1              # read current values
+sudo xbe2-rw saturation 1 255 255 255 255   # force full analog
 
 # Rumble test
 sudo xbe2-rw rumble 50 50 0 0
@@ -195,10 +206,6 @@ xbelite2/
 ## Protocol
 
 See [docs/protocol.md](docs/protocol.md) for the reverse-engineered GIP protocol reference.
-
-## Testing
-
-See [TESTING.md](TESTING.md) for comprehensive testing procedures and troubleshooting.
 
 ## License
 
