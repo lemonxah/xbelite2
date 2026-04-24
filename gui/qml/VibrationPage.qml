@@ -22,19 +22,19 @@ Item {
         }
 
         VibRow { label: "Strong Motor (Main)"; val: profileModel.vibration_main
-            onSliderMoved: profileModel.set_vibration(0, val)
+            onSliderMoved: (newVal) => profileModel.set_vibration(0, newVal)
             onTest: profileModel.test_vibration(0, profileModel.vibration_main) }
 
         VibRow { label: "Weak Motor"; val: profileModel.vibration_weak
-            onSliderMoved: profileModel.set_vibration(1, val)
+            onSliderMoved: (newVal) => profileModel.set_vibration(1, newVal)
             onTest: profileModel.test_vibration(1, profileModel.vibration_weak) }
 
         VibRow { label: "Left Trigger Impulse"; val: profileModel.vibration_lt
-            onSliderMoved: profileModel.set_vibration(2, val)
+            onSliderMoved: (newVal) => profileModel.set_vibration(2, newVal)
             onTest: profileModel.test_vibration(2, profileModel.vibration_lt) }
 
         VibRow { label: "Right Trigger Impulse"; val: profileModel.vibration_rt
-            onSliderMoved: profileModel.set_vibration(3, val)
+            onSliderMoved: (newVal) => profileModel.set_vibration(3, newVal)
             onTest: profileModel.test_vibration(3, profileModel.vibration_rt) }
 
         Button {

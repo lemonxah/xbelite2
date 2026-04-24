@@ -37,6 +37,8 @@ pub mod qobject {
         // Live input state from controller
         #[qproperty(i32, live_buttons)]
         #[qproperty(i32, live_paddles)]
+        /// D-pad bitmask: bit 0=Up, 1=Down, 2=Left, 3=Right.
+        #[qproperty(i32, live_dpad)]
         #[qproperty(i32, live_lx)]
         #[qproperty(i32, live_ly)]
         #[qproperty(i32, live_rx)]
@@ -234,6 +236,7 @@ pub struct ProfileModelRust {
     profile_brightness: i32,
     live_buttons: i32,
     live_paddles: i32,
+    live_dpad: i32,
     live_lx: i32,
     live_ly: i32,
     live_rx: i32,
@@ -284,6 +287,7 @@ impl Default for ProfileModelRust {
             profile_brightness: 100,
             live_buttons: 0,
             live_paddles: 0,
+            live_dpad: 0,
             live_lx: 0,
             live_ly: 0,
             live_rx: 0,
@@ -832,6 +836,7 @@ impl qobject::ProfileModel {
                     let input = self.as_mut().rust_mut().evdev.poll();
                     self.as_mut().set_live_buttons(input.buttons as i32);
                     self.as_mut().set_live_paddles(input.paddles as i32);
+                    self.as_mut().set_live_dpad(input.dpad as i32);
                     self.as_mut().set_live_lx(input.left_stick_x as i32);
                     self.as_mut().set_live_ly(input.left_stick_y as i32);
                     self.as_mut().set_live_rx(input.right_stick_x as i32);

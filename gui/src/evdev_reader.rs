@@ -5,6 +5,9 @@ use std::path::Path;
 pub struct ControllerInput {
     pub buttons: u16,
     pub paddles: u8,
+    /// D-pad bitmask: bit 0 = Up, 1 = Down, 2 = Left, 3 = Right. Derived from
+    /// ABS_HAT0X/ABS_HAT0Y (the driver reports d-pad as a hat, not buttons).
+    pub dpad: u8,
     pub left_stick_x: i16,
     pub left_stick_y: i16,
     pub right_stick_x: i16,
@@ -18,6 +21,7 @@ impl Default for ControllerInput {
         Self {
             buttons: 0,
             paddles: 0,
+            dpad: 0,
             left_stick_x: 0,
             left_stick_y: 0,
             right_stick_x: 0,
@@ -143,6 +147,18 @@ impl EvdevReader {
             AbsoluteAxisType::ABS_RZ => {
                 state.right_trigger = value as u16;
             }
+            AbsoluteAxisType::ABS_HAT0X => {
+                // -1 = Left, 0 = centered, +1 = Right
+                state.dpad &= !((1 << 2) | (1 << 3));
+                if value < 0 { state.dpad |= 1 << 2; }
+                else if value > 0 { state.dpad |= 1 << 3; }
+            }
+            AbsoluteAxisType::ABS_HAT0Y => {
+                // -1 = Up, 0 = centered, +1 = Down
+                state.dpad &= !((1 << 0) | (1 << 1));
+                if value < 0 { state.dpad |= 1 << 0; }
+                else if value > 0 { state.dpad |= 1 << 1; }
+            }
             _ => {}
         }
     }
@@ -153,6 +169,7 @@ impl Clone for ControllerInput {
         Self {
             buttons: self.buttons,
             paddles: self.paddles,
+            dpad: self.dpad,
             left_stick_x: self.left_stick_x,
             left_stick_y: self.left_stick_y,
             right_stick_x: self.right_stick_x,
