@@ -1,6 +1,6 @@
 [package]
 name = "xbe2-bt"
-version = "0.9.4"
+version = "0.9.5"
 edition = "2021"
 description = "CLI tool for testing Xbox Elite Series 2 controller over Bluetooth"
 license = "GPL-2.0-only"
